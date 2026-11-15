@@ -1,0 +1,36 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "erudify-ai-tutor",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-14",
+  "compatibility_flags": ["nodejs_compat"],
+  "upload_source_maps": true,
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+  },
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": ["/api/*"],
+  },
+  "vars": {
+    "TUTOR_MODEL": "claude-sonnet-5-5",
+    "JUDGE_MODEL": "claude-sonnet-5-5",
+    "TUTOR_EFFORT": "low",
+    "JUDGE_EFFORT": "low",
+    "TUTOR_BACKEND": "claude",
+  },
+  "durable_objects": {
+    "bindings": [{ "name": "LEARNER", "class_name": "Learner" }],
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Learner"] }],
+  "d1_databases": [
+    {
+      "binding": "CORPUS",
+      "database_name": "erudify-corpus",
+      "database_id": "00000000-0000-0000-0000-000000000001",
+      "migrations_dir": "migrations",
+    },
+  ],
+}

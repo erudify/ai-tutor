@@ -1,0 +1,8 @@
+node_modules
+.wrangler
+vendor
+corpus
+worker-configuration.d.ts
+package-lock.json
+public/dict.json
+public/lookup.js

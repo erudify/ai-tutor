@@ -1,0 +1,325 @@
+import type { Corpus } from "./corpus/model";
+import { CorpusEmptyError, getCorpus } from "./corpus/load";
+import { Learner } from "./learner";
+import { createClaude } from "./llm/claude";
+import { TUTOR_INSTRUCTIONS } from "./llm/prompts";
+import { rulesLlm } from "./llm/rules";
+import type { Llm } from "./llm/types";
+import { preview } from "./srs/schedule";
+import { prepareTurn, type Snapshot } from "./turn";
+
+export { Learner };
+
+const LEARNER_ID = /^[a-zA-Z0-9_-]{1,64}$/;
+const MAX_BODY = 20_000;
+const MAX_TEXT = 2_000;
+
+class HttpError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+declare global {
+  interface Env {
+    ANTHROPIC_API_KEY?: string;
+  }
+}
+
+function llmFor(env: Env): Llm {
+  const backend: string = env.TUTOR_BACKEND;
+  if (backend === "rules") return rulesLlm();
+  if (!env.ANTHROPIC_API_KEY) {
+    throw new HttpError(
+      500,
+      "ANTHROPIC_API_KEY is not set. Add it with wrangler secret put, or a .dev.vars file for local dev.",
+    );
+  }
+  return createClaude({
+    apiKey: env.ANTHROPIC_API_KEY,
+    tutorModel: env.TUTOR_MODEL,
+    judgeModel: env.JUDGE_MODEL,
+    tutorEffort: env.TUTOR_EFFORT,
+    judgeEffort: env.JUDGE_EFFORT,
+  });
+}
+
+function learnerStub(env: Env, id: string): DurableObjectStub<Learner> {
+  if (!LEARNER_ID.test(id))
+    throw new HttpError(400, "Learner id must be 1–64 letters, numbers, _ or -.");
+  return env.LEARNER.get(env.LEARNER.idFromName(id));
+}
+
+async function readJson(request: Request): Promise<unknown> {
+  const claimed = Number(request.headers.get("content-length") ?? "0");
+  if (Number.isFinite(claimed) && claimed > MAX_BODY)
+    throw new HttpError(413, "Request body is too large.");
+  const text = await request.text();
+  if (text.length > MAX_BODY) throw new HttpError(413, "Request body is too large.");
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    throw new HttpError(400, "Request body must be JSON.");
+  }
+}
+
+function field(body: unknown, key: string): unknown {
+  if (typeof body !== "object" || body === null || !(key in body)) return undefined;
+  return (body as Record<string, unknown>)[key];
+}
+
+function learnerId(body: unknown, url: URL): string {
+  const fromBody = field(body, "learner");
+  const value =
+    typeof fromBody === "string" ? fromBody : (url.searchParams.get("learner") ?? "");
+  return value.trim();
+}
+
+async function sessionPayload(env: Env, id: string, now: number) {
+  const corpus = await getCorpus(env.CORPUS);
+  const ledger = await learnerStub(env, id).snapshot();
+  return {
+    learner: id,
+    backend: env.TUTOR_BACKEND,
+    tutorModel: env.TUTOR_MODEL,
+    judgeModel: env.JUDGE_MODEL,
+    systemPrompt: TUTOR_INSTRUCTIONS,
+    messages: ledger.messages,
+    trace: ledger.trace,
+    preview: preview(corpus, ledger.cards, now),
+  };
+}
+
+const encoder = new TextEncoder();
+
+function sse(event: string, data: unknown): Uint8Array {
+  return encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+}
+
+async function completeTurn(input: {
+  stub: DurableObjectStub<Learner>;
+  token: string;
+  corpus: Corpus;
+  llm: Llm;
+  snapshot: Snapshot;
+  studentText: string;
+  now: number;
+  learner: string;
+}): Promise<Response> {
+  try {
+    const prepared = await prepareTurn({
+      corpus: input.corpus,
+      snapshot: input.snapshot,
+      studentText: input.studentText,
+      now: input.now,
+      llm: input.llm,
+    });
+    const reply = (await input.llm.tutor(prepared.tutorInput)).trim();
+    if (!reply) throw new Error("The tutor returned an empty reply.");
+    const saved = await input.stub.commit({
+      token: input.token,
+      now: input.now,
+      studentText: input.studentText,
+      reply,
+      cards: prepared.cards,
+      trace: prepared.trace,
+    });
+    if (!saved.ok)
+      throw new HttpError(409, "The turn lock expired before the reply was saved.");
+    console.log(
+      JSON.stringify({
+        message: "turn complete",
+        learner: input.learner,
+        backend: prepared.trace.backend,
+        events: prepared.trace.events.length,
+        suggestions: prepared.trace.suggestions.length,
+      }),
+    );
+    return Response.json({
+      reply,
+      trace: prepared.trace,
+      preview: preview(input.corpus, prepared.cards, input.now),
+    });
+  } catch (error) {
+    await input.stub.abort(input.token);
+    throw error;
+  }
+}
+
+function streamTurn(input: {
+  request: Request;
+  stub: DurableObjectStub<Learner>;
+  token: string;
+  corpus: Corpus;
+  llm: Llm;
+  snapshot: Snapshot;
+  studentText: string;
+  now: number;
+  learner: string;
+}): Response {
+  const upstream = new AbortController();
+  const onAbort = () => upstream.abort();
+  input.request.signal.addEventListener("abort", onAbort);
+  let committed = false;
+  const stream = new ReadableStream({
+    async start(controller) {
+      const send = (event: string, data: unknown) => {
+        controller.enqueue(sse(event, data));
+      };
+      try {
+        const prepared = await prepareTurn({
+          corpus: input.corpus,
+          snapshot: input.snapshot,
+          studentText: input.studentText,
+          now: input.now,
+          llm: input.llm,
+        });
+        send("meta", {
+          trace: prepared.trace,
+          preview: preview(input.corpus, prepared.cards, input.now),
+        });
+        let reply = "";
+        for await (const delta of input.llm.tutorStream(
+          prepared.tutorInput,
+          upstream.signal,
+        )) {
+          reply += delta;
+          send("delta", { text: delta });
+        }
+        reply = reply.trim();
+        if (!reply) throw new Error("The tutor returned an empty reply.");
+        const saved = await input.stub.commit({
+          token: input.token,
+          now: input.now,
+          studentText: input.studentText,
+          reply,
+          cards: prepared.cards,
+          trace: prepared.trace,
+        });
+        if (!saved.ok)
+          throw new Error("The turn lock expired before the reply was saved.");
+        committed = true;
+        console.log(
+          JSON.stringify({
+            message: "turn complete",
+            learner: input.learner,
+            backend: prepared.trace.backend,
+            events: prepared.trace.events.length,
+            suggestions: prepared.trace.suggestions.length,
+          }),
+        );
+        send("done", { reply });
+        controller.close();
+      } catch (error) {
+        if (!committed) await input.stub.abort(input.token);
+        if (committed || input.request.signal.aborted) {
+          try {
+            controller.close();
+          } catch {
+            // The client already went away.
+          }
+          return;
+        }
+        const message = error instanceof Error ? error.message : "The turn failed.";
+        console.error(JSON.stringify({ message: "request failed", error: message }));
+        try {
+          send("error", { error: message });
+          controller.close();
+        } catch {
+          // The stream is already closed.
+        }
+      } finally {
+        input.request.signal.removeEventListener("abort", onAbort);
+      }
+    },
+    cancel() {
+      upstream.abort();
+    },
+  });
+  return new Response(stream, {
+    headers: {
+      "content-type": "text/event-stream; charset=utf-8",
+      "cache-control": "no-cache, no-transform",
+      "x-accel-buffering": "no",
+    },
+  });
+}
+
+export default {
+  async fetch(request: Request, env: Env): Promise<Response> {
+    const url = new URL(request.url);
+    try {
+      if (request.method === "GET" && url.pathname === "/api/health") {
+        return Response.json({
+          ok: true,
+          backend: env.TUTOR_BACKEND,
+          tutorModel: env.TUTOR_MODEL,
+          judgeModel: env.JUDGE_MODEL,
+        });
+      }
+      if (request.method === "GET" && url.pathname === "/api/session") {
+        const id = learnerId(null, url);
+        return Response.json(await sessionPayload(env, id, Date.now()));
+      }
+      if (request.method === "POST" && url.pathname === "/api/reset") {
+        const body = await readJson(request);
+        const id = learnerId(body, url);
+        await learnerStub(env, id).reset();
+        return Response.json(await sessionPayload(env, id, Date.now()));
+      }
+      if (request.method === "POST" && url.pathname === "/api/turn") {
+        const body = await readJson(request);
+        const id = learnerId(body, url);
+        const text = field(body, "text");
+        if (typeof text !== "string" || text.trim().length === 0) {
+          throw new HttpError(400, "Type a message first.");
+        }
+        if (text.length > MAX_TEXT)
+          throw new HttpError(400, "That message is too long.");
+        const studentText = text.trim();
+        const now = Date.now();
+        const stub = learnerStub(env, id);
+        const begun = await stub.begin(now);
+        if (!begun.ok)
+          throw new HttpError(409, "A turn is already running for this learner.");
+        let corpus;
+        let llm;
+        try {
+          corpus = await getCorpus(env.CORPUS);
+          llm = llmFor(env);
+        } catch (error) {
+          await stub.abort(begun.token);
+          throw error;
+        }
+        const turnInput = {
+          request,
+          stub,
+          token: begun.token,
+          corpus,
+          llm,
+          snapshot: { messages: begun.messages, cards: begun.cards },
+          studentText,
+          now,
+          learner: id,
+        };
+        const accept = request.headers.get("accept") ?? "";
+        if (accept.includes("text/event-stream")) return streamTurn(turnInput);
+        return await completeTurn(turnInput);
+      }
+      return Response.json({ error: "Not found." }, { status: 404 });
+    } catch (error) {
+      if (error instanceof CorpusEmptyError) {
+        return Response.json({ error: error.message }, { status: 503 });
+      }
+      if (error instanceof HttpError) {
+        return Response.json({ error: error.message }, { status: error.status });
+      }
+      const message = error instanceof Error ? error.message : "The turn failed.";
+      console.error(JSON.stringify({ message: "request failed", error: message }));
+      return Response.json({ error: message }, { status: 502 });
+    }
+  },
+} satisfies ExportedHandler<Env>;

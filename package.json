@@ -1,0 +1,31 @@
+{
+  "name": "erudify-ai-tutor",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "wrangler dev",
+    "dict": "tsx scripts/dict.ts",
+    "seed": "tsx scripts/seed.ts",
+    "test": "vitest run",
+    "typecheck": "wrangler types && tsc --noEmit",
+    "lint": "eslint .",
+    "pinyin": "esbuild src/pinyin.ts --bundle --format=esm --platform=browser --target=es2022 --charset=utf8 --outfile=public/pinyin.js && prettier --write public/pinyin.js",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "26.6.6",
+    "esbuild": "0.28.2",
+    "eslint": "10.15.0",
+    "prettier": "3.10.1",
+    "tsx": "4.23.15",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.72.2",
+    "vitest": "5.1.0",
+    "wrangler": "4.162.0"
+  }
+}

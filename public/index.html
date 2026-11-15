@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Erudify</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,560;9..144,650&family=Noto+Sans+SC:wght@400;500&family=Noto+Serif+SC:wght@500&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/app.css" />
+  </head>
+  <body>
+    <header class="top">
+      <div class="brand">
+        <span class="seal" aria-hidden="true">习</span>
+        <div>
+          <h1>Erudify</h1>
+          <p>A Mandarin tutor with a memory schedule it does not have to follow.</p>
+        </div>
+      </div>
+      <form class="who" id="who">
+        <label>
+          Learner
+          <input
+            id="learner"
+            name="learner"
+            autocomplete="off"
+            spellcheck="false"
+            maxlength="64"
+          />
+        </label>
+        <button type="button" id="reset">Reset schedule</button>
+        <p id="backend" class="backend"></p>
+      </form>
+    </header>
+    <main>
+      <section class="chat" aria-label="Conversation">
+        <ol id="messages"></ol>
+        <form id="composer">
+          <label class="sr" for="text">Message</label>
+          <textarea
+            id="text"
+            rows="2"
+            maxlength="2000"
+            spellcheck="false"
+            autocapitalize="off"
+            autocorrect="off"
+            placeholder="Say something, or ask what a word means. ni3 types nǐ."
+          ></textarea>
+          <div class="send-row">
+            <p id="status" role="status"></p>
+            <button type="submit" id="send">Send</button>
+          </div>
+        </form>
+      </section>
+      <aside class="ledger" aria-label="Schedule">
+        <h2>Schedule</h2>
+        <p class="lede">
+          Updated from the student's message, then offered to the tutor as optional
+          guidance.
+        </p>
+        <dl id="counts"></dl>
+        <h3>Due</h3>
+        <ul id="due"></ul>
+        <h3>Next in the curriculum</h3>
+        <ul id="next"></ul>
+        <h3>Last turn</h3>
+        <div id="trace"></div>
+      </aside>
+    </main>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

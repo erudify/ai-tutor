@@ -1,0 +1,9 @@
+node_modules
+.wrangler
+.dev.vars
+corpus/*.sql
+public/dict.json
+public/lookup.js
+dist
+.DS_Store
+worker-configuration.d.ts
