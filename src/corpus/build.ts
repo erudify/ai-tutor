@@ -18,11 +18,9 @@ export type BuiltWord = {
 
 export type BuiltSentence = {
   id: string;
-  headword: string;
   hanzi: string;
   pinyin: string;
   english: string;
-  position: number;
 };
 
 export type BuiltCorpus = {
@@ -37,7 +35,6 @@ export type LevelFile = {
 
 type Lesson = {
   level: number;
-  ord: number;
   sentences: RawSentence[];
 };
 
@@ -91,18 +88,21 @@ function substrings(text: string): Set<string> {
 }
 
 /**
- * Curriculum order is a flat list made by ordering the sentences. Each
- * sentence introduces the earliest remaining lesson word and adds as few
- * other words as possible. CC-CEDICT supplies spellings, pinyin, and glosses.
- * A word the clusters never teach on purpose, such as 喜欢, joins the list
- * when a sentence needs it.
+ * Curriculum order is a flat list of dictionary words that occur in the
+ * sentences. Frequency is how many sentences contain the word. The next
+ * sentence teaches a new word of the highest frequency. Its rarest new word
+ * is as common as possible, then it adds as few new characters as possible,
+ * then as few new words as possible. Order inside the source files does not
+ * change the list. CC-CEDICT supplies spellings,
+ * pinyin, and glosses.
+ * `level` is the source file of a cluster (a run of neighboring sentences
+ * that share a word). It is only for the brief's source-list summary.
  */
 export function buildCorpus(levels: readonly LevelFile[], cedictText: string): BuiltCorpus {
   const dictionary = parseCedict(cedictText);
   const dictionaryWords = new Set(dictionary.keys());
   const lessons = new Map<string, Lesson>();
   const allSentences: RawSentence[] = [];
-  let ord = 0;
 
   for (const file of levels) {
     const parsed = parseSentenceFile(file.text);
@@ -115,8 +115,7 @@ export function buildCorpus(levels: readonly LevelFile[], cedictText: string): B
       if (existing) {
         existing.sentences.push(...group.sentences);
       } else {
-        lessons.set(head, { level: file.level, ord, sentences: [...group.sentences] });
-        ord += 1;
+        lessons.set(head, { level: file.level, sentences: [...group.sentences] });
       }
     }
   }
@@ -130,10 +129,6 @@ export function buildCorpus(levels: readonly LevelFile[], cedictText: string): B
   for (const [hanzi, entry] of dictionary) {
     if (seen.has(hanzi)) present.set(hanzi, entry);
   }
-  for (const hanzi of lessons.keys()) {
-    if (!present.has(hanzi)) present.set(hanzi, { pinyin: "", gloss: "" });
-  }
-
   const firstUse = firstExamples(allSentences, new Set(present.keys()));
   const lexiconSegmenter = new Segmenter([...present.keys()]);
   const placement = new Map(
@@ -144,7 +139,6 @@ export function buildCorpus(levels: readonly LevelFile[], cedictText: string): B
         english: sentence.english,
         tokens: curriculumTokens(lexiconSegmenter, sentence.hanzi),
       })),
-      new Map([...lessons.entries()].map(([hanzi, lesson]) => [hanzi, lesson.ord])),
     ).map((item) => [item.hanzi, item]),
   );
   const curriculumSegmenter = new Segmenter([...placement.keys()]);
@@ -176,21 +170,17 @@ export function buildCorpus(levels: readonly LevelFile[], cedictText: string): B
 
   const sentences: BuiltSentence[] = [];
   const seenSentence = new Set<string>();
-  let position = 0;
   for (const sentence of allSentences) {
     if (seenSentence.has(sentence.hanzi)) continue;
     const tokens = curriculumTokens(curriculumSegmenter, sentence.hanzi);
     if (!tokens) continue;
     seenSentence.add(sentence.hanzi);
     sentences.push({
-      id: `s${position}`,
-      headword: tokens[0],
+      id: `s${sentences.length}`,
       hanzi: sentence.hanzi,
       pinyin: sentence.pinyin,
       english: sentence.english,
-      position,
     });
-    position += 1;
   }
 
   return { words, sentences };

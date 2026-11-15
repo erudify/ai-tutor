@@ -48,20 +48,10 @@ export type Word = {
   exampleLimit: number | null;
 };
 
-export type ExampleSentence = {
-  id: string;
-  headword: string;
-  hanzi: string;
-  pinyin: string;
-  english: string;
-  position: number;
-};
-
 export type Corpus = {
   words: Word[];
   byHanzi: Map<string, Word>;
   curriculum: Word[];
-  sentencesByHeadword: Map<string, ExampleSentence[]>;
   /** Legal example sentences that contain each curriculum word. */
   examplesByToken: Map<string, IndexedExample[]>;
   segmenter: Segmenter;
@@ -99,12 +89,6 @@ export function indexCorpus(builtWords: readonly BuiltWord[], builtSentences: re
     word.exampleLimit =
       word.ord === null ? null : (limitByExample.get(word.exampleHanzi) ?? word.ord);
   }
-  const sentencesByHeadword = new Map<string, ExampleSentence[]>();
-  for (const sentence of builtSentences) {
-    const list = sentencesByHeadword.get(sentence.headword) ?? [];
-    list.push(sentence);
-    sentencesByHeadword.set(sentence.headword, list);
-  }
   const examplesByToken = indexExamples(
     curriculum.map((word) => word.hanzi),
     builtSentences,
@@ -113,7 +97,6 @@ export function indexCorpus(builtWords: readonly BuiltWord[], builtSentences: re
     words,
     byHanzi,
     curriculum,
-    sentencesByHeadword,
     examplesByToken,
     segmenter: new Segmenter(words.map((word) => word.hanzi)),
   };

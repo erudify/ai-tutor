@@ -53,81 +53,133 @@ function uniqueInOrder(tokens: readonly string[]): string[] {
   return unique;
 }
 
+function charactersOf(tokens: readonly string[]): string[] {
+  const chars: string[] = [];
+  const seen = new Set<string>();
+  for (const token of tokens) {
+    for (const char of token) {
+      if (seen.has(char)) continue;
+      seen.add(char);
+      chars.push(char);
+    }
+  }
+  return chars;
+}
+
 /**
  * Build a flat curriculum by ordering sentences.
- * The next sentence is the one that introduces the earliest remaining lesson
- * word. It adds as few words from outside the lessons as possible, then as
- * few new words as possible. Words join in left-to-right first appearance,
- * and that sentence is each new word's example.
+ * Frequency is the number of these sentences that contain the word.
+ * A new word is a token that is not in the curriculum yet.
+ * A new character is a character that is not part of a word already in the curriculum.
+ * The next sentence contains a new word of the highest frequency. Its rarest
+ * new word is as common as possible, then it adds as few new characters as
+ * possible, then as few new words as possible. A tie keeps the earlier
+ * sentence text (`localeCompare` with `"zh"`). The order of
+ * `sentences` is not used. New words from that sentence join with the most
+ * frequent first, and that sentence is each new word's example.
  */
-export function orderSentences(
-  sentences: readonly ExampleCandidate[],
-  sourceOrd: ReadonlyMap<string, number> = new Map(),
-): Placement[] {
-  type Parsed = ExampleCandidate & { unique: string[]; position: number };
-  const pool: Parsed[] = [];
-  const seenText = new Set<string>();
+export function orderSentences(sentences: readonly ExampleCandidate[]): Placement[] {
+  type Parsed = ExampleCandidate & { unique: string[]; chars: string[] };
+  const byText = new Map<string, Parsed>();
   for (const sentence of sentences) {
     if (!sentence.tokens || sentence.tokens.length === 0) continue;
-    if (seenText.has(sentence.hanzi)) continue;
-    seenText.add(sentence.hanzi);
-    pool.push({ ...sentence, unique: uniqueInOrder(sentence.tokens), position: pool.length });
+    const existing = byText.get(sentence.hanzi);
+    if (existing) {
+      const pinyin = sentence.pinyin.localeCompare(existing.pinyin, "zh");
+      if (
+        pinyin < 0 ||
+        (pinyin === 0 && sentence.english.localeCompare(existing.english, "zh") < 0)
+      ) {
+        existing.pinyin = sentence.pinyin;
+        existing.english = sentence.english;
+      }
+      continue;
+    }
+    const unique = uniqueInOrder(sentence.tokens);
+    byText.set(sentence.hanzi, { ...sentence, unique, chars: charactersOf(unique) });
   }
+
+  const pool = [...byText.values()];
+  const frequency = new Map<string, number>();
   const byToken = new Map<string, Parsed[]>();
   for (const sentence of pool) {
     for (const token of sentence.unique) {
+      frequency.set(token, (frequency.get(token) ?? 0) + 1);
       const list = byToken.get(token) ?? [];
       list.push(sentence);
       byToken.set(token, list);
     }
   }
+  const ranked = [...frequency.keys()].sort(
+    (left, right) =>
+      (frequency.get(right) ?? 0) - (frequency.get(left) ?? 0) ||
+      left.localeCompare(right, "zh"),
+  );
 
   const introduced = new Set<string>();
+  const knownChars = new Set<string>();
   const placements: Placement[] = [];
   let ord = 0;
-  const rank = (hanzi: string) => sourceOrd.get(hanzi) ?? Number.MAX_SAFE_INTEGER;
-  const targets = [...sourceOrd.entries()].sort((left, right) => left[1] - right[1]);
-  for (const [target] of targets) {
-    if (introduced.has(target)) continue;
-    const options = byToken.get(target);
-    if (!options) continue;
+  let cursor = 0;
+  while (cursor < ranked.length) {
+    while (cursor < ranked.length && introduced.has(ranked[cursor] ?? "")) cursor += 1;
+    if (cursor >= ranked.length) break;
+    const targetFreq = frequency.get(ranked[cursor] ?? "") ?? 0;
+    let bandEnd = cursor + 1;
+    while (bandEnd < ranked.length && frequency.get(ranked[bandEnd] ?? "") === targetFreq) {
+      bandEnd += 1;
+    }
+
     let best: Parsed | null = null;
-    let bestExtras = Infinity;
-    let bestNews = Infinity;
-    let bestRank = Infinity;
-    for (const sentence of options) {
-      let news = 0;
-      let extras = 0;
-      let far = 0;
-      for (const token of sentence.unique) {
-        if (introduced.has(token)) continue;
-        news += 1;
-        const tokenRank = rank(token);
-        if (tokenRank === Number.MAX_SAFE_INTEGER) extras += 1;
-        else if (tokenRank > far) far = tokenRank;
-      }
-      if (news === 0) continue;
-      const better =
-        extras < bestExtras ||
-        (extras === bestExtras && news < bestNews) ||
-        (extras === bestExtras && news === bestNews && far < bestRank) ||
-        (extras === bestExtras &&
-          news === bestNews &&
-          far === bestRank &&
+    let bestChars = Infinity;
+    let bestWords = Infinity;
+    let bestMinFreq = -1;
+    const seenSentence = new Set<Parsed>();
+    for (let index = cursor; index < bandEnd; index += 1) {
+      const word = ranked[index];
+      if (!word || introduced.has(word)) continue;
+      for (const sentence of byToken.get(word) ?? []) {
+        if (seenSentence.has(sentence)) continue;
+        seenSentence.add(sentence);
+        let newWords = 0;
+        let minFreq = Infinity;
+        for (const token of sentence.unique) {
+          if (introduced.has(token)) continue;
+          newWords += 1;
+          const wordFreq = frequency.get(token) ?? 0;
+          if (wordFreq < minFreq) minFreq = wordFreq;
+        }
+        if (newWords === 0) continue;
+        let newChars = 0;
+        for (const char of sentence.chars) if (!knownChars.has(char)) newChars += 1;
+        const textBetter =
           best !== null &&
-          (sentence.unique.length < best.unique.length ||
-            (sentence.unique.length === best.unique.length &&
-              sentence.position < best.position)));
-      if (best === null || better) {
-        best = sentence;
-        bestExtras = extras;
-        bestNews = news;
-        bestRank = far;
+          minFreq === bestMinFreq &&
+          newChars === bestChars &&
+          newWords === bestWords &&
+          sentence.hanzi.localeCompare(best.hanzi, "zh") < 0;
+        const better =
+          best === null ||
+          minFreq > bestMinFreq ||
+          (minFreq === bestMinFreq && newChars < bestChars) ||
+          (minFreq === bestMinFreq && newChars === bestChars && newWords < bestWords) ||
+          textBetter;
+        if (better) {
+          best = sentence;
+          bestChars = newChars;
+          bestWords = newWords;
+          bestMinFreq = minFreq;
+        }
       }
     }
-    if (!best) continue;
-    for (const token of best.unique) {
-      if (introduced.has(token)) continue;
+    if (!best) {
+      cursor = bandEnd;
+      continue;
+    }
+
+    const added = best.unique.filter((token) => !introduced.has(token));
+    added.sort((left, right) => (frequency.get(right) ?? 0) - (frequency.get(left) ?? 0));
+    for (const token of added) {
       placements.push({
         hanzi: token,
         ord,
@@ -136,6 +188,7 @@ export function orderSentences(
         exampleEnglish: best.english,
       });
       introduced.add(token);
+      for (const char of token) knownChars.add(char);
       ord += 1;
     }
   }
@@ -145,7 +198,7 @@ export function orderSentences(
 /**
  * A legal example uses this word and words introduced in its sentence or
  * earlier (`ord <= limit`). Fewer unknown words win. Once the student knows
- * those words, a longer sentence wins.
+ * those words, a longer sentence wins. A tie keeps the earlier sentence text.
  */
 export function pickExample(
   sentences: readonly IndexedExample[],
@@ -183,17 +236,24 @@ export function pickExample(
     }
     if (!legal || !seen.has(wordHanzi)) continue;
     const complexity = unique.length;
-    const richer =
-      unknown === 0 && bestUnknown === 0
-        ? complexity > bestComplexity ||
-          (complexity === bestComplexity &&
-            best !== null &&
-            sentence.hanzi.length > best.hanzi.length)
-        : complexity < bestComplexity ||
-          (complexity === bestComplexity &&
-            best !== null &&
-            sentence.hanzi.length < best.hanzi.length);
-    if (best === null || unknown < bestUnknown || (unknown === bestUnknown && richer)) {
+    let better = best === null || unknown < bestUnknown;
+    if (!better && best !== null && unknown === bestUnknown) {
+      const longerKnown = unknown === 0;
+      const complexityBetter = longerKnown
+        ? complexity > bestComplexity
+        : complexity < bestComplexity;
+      const lengthBetter =
+        complexity === bestComplexity &&
+        (longerKnown
+          ? sentence.hanzi.length > best.hanzi.length
+          : sentence.hanzi.length < best.hanzi.length);
+      const textBetter =
+        complexity === bestComplexity &&
+        sentence.hanzi.length === best.hanzi.length &&
+        sentence.hanzi.localeCompare(best.hanzi, "zh") < 0;
+      better = complexityBetter || lengthBetter || textBetter;
+    }
+    if (better) {
       best = sentence;
       bestUnknown = unknown;
       bestComplexity = complexity;

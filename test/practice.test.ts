@@ -25,8 +25,8 @@ function word(
   };
 }
 
-function sentence(hanzi: string, headword: string): BuiltSentence {
-  return { id: hanzi, headword, hanzi, pinyin: "", english: "", position: 0 };
+function sentence(hanzi: string): BuiltSentence {
+  return { id: hanzi, hanzi, pinyin: "", english: "" };
 }
 
 const corpus = indexCorpus(
@@ -81,11 +81,11 @@ const corpus = indexCorpus(
     }),
   ],
   [
-    sentence("我在学校。", "我"),
-    sentence("我每天上班。", "每天"),
-    sentence("我上班。", "上班"),
-    sentence("学校上班。", "学校"),
-    sentence("每天上班。", "每天"),
+    sentence("我在学校。"),
+    sentence("我每天上班。"),
+    sentence("我上班。"),
+    sentence("学校上班。"),
+    sentence("每天上班。"),
   ],
 );
 
@@ -195,7 +195,7 @@ describe("pickPractice", () => {
           exampleHanzi: "每天上班。",
         }),
       ],
-      [sentence("每天上班。", "上班")],
+      [sentence("每天上班。")],
     );
     expect(
       pickPractice(

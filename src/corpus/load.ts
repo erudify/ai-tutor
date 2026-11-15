@@ -15,11 +15,9 @@ type WordRow = {
 
 type SentenceRow = {
   id: string;
-  headword: string;
   hanzi: string;
   pinyin: string;
   english: string;
-  position: number;
 };
 
 export class CorpusEmptyError extends Error {
@@ -38,9 +36,8 @@ export async function loadCorpus(db: D1Database): Promise<Corpus> {
     .all<WordRow>();
   const sentences = await db
     .prepare(
-      `SELECT id, headword, hanzi, pinyin, english, position
-       FROM sentences
-       ORDER BY position`,
+      `SELECT id, hanzi, pinyin, english
+       FROM sentences`,
     )
     .all<SentenceRow>();
   if (words.results.length === 0) throw new CorpusEmptyError();
@@ -57,11 +54,9 @@ export async function loadCorpus(db: D1Database): Promise<Corpus> {
   }));
   const builtSentences: BuiltSentence[] = sentences.results.map((row) => ({
     id: row.id,
-    headword: row.headword,
     hanzi: row.hanzi,
     pinyin: row.pinyin,
     english: row.english,
-    position: row.position,
   }));
   return indexCorpus(builtWords, builtSentences);
 }

@@ -51,14 +51,7 @@ function wordRow(word: BuiltWord): (string | number | null)[] {
 }
 
 function sentenceRow(sentence: BuiltSentence): (string | number | null)[] {
-  return [
-    sentence.id,
-    sentence.headword,
-    sentence.hanzi,
-    sentence.pinyin,
-    sentence.english,
-    sentence.position,
-  ];
+  return [sentence.id, sentence.hanzi, sentence.pinyin, sentence.english];
 }
 
 async function main(): Promise<void> {
@@ -94,7 +87,7 @@ async function main(): Promise<void> {
     ),
     inserts(
       "sentences",
-      ["id", "headword", "hanzi", "pinyin", "english", "position"],
+      ["id", "hanzi", "pinyin", "english"],
       corpus.sentences.map(sentenceRow),
     ),
   ].join("\n");

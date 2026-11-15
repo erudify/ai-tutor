@@ -8,7 +8,7 @@ Word boundaries are decided in code, by longest match against the lexicon. The m
 
 The model does not receive a random sample of known words. Small sets that should change the reply are listed in full: fragile or due words, the next curriculum items (at most eight), and one to three optional suggestions. The brief names those words. It does not include pinyin or English glosses. While the student has few stable words, those are listed too. After that, the brief summarizes source-list coverage and keeps the fragile exceptions, plus whatever was just said. A question about 饺子 is answered as a question about 饺子. When that exchange ends, the next suggestion is already waiting.
 
-Curriculum order is a flat list built by ordering those sentences. The next sentence introduces the earliest remaining lesson word and adds as few new words as possible. Words join in the order they first appear, and that sentence is their example. An example may use words from that sentence and from earlier sentences, and nothing from a later one. The sentence is chosen again for each student: unknown words make it simpler, and words the student already knows make it more complex.
+Curriculum order is a flat list built by ordering those sentences. Frequency is the number of sentences that contain a word. A new word is a token that is not in the list yet. A new character is a character that is not part of a word already in the list. The next sentence contains a new word of the highest frequency. Its rarest new word is as common as possible, then it adds as few new characters as possible, then as few new words as possible. A tie keeps the earlier sentence text. The order of sentences inside the source files does not change the list. New words from that sentence join with the most frequent first, and that sentence is their example. An example may use words from that sentence and from earlier sentences, and nothing from a later one. The sentence is chosen again for each student: unknown words make it simpler, and words the student already knows make it more complex.
 
 ## What a turn does
 
@@ -25,7 +25,7 @@ Scheduling is FSRS-5 with the default weights, desired retention 0.9, learning s
 
 The word set comes from the unlabeled example runs in [haoxue-public](https://github.com/haoxue-tutor/haoxue-public) (commit `3c12c3291d19180faf163b72082fb719a796a365`). The filenames say HSK 1–4. The text is not the official HSK lists. Teaching order is the sentence order described above, not the order of the files.
 
-Spellings, pinyin, and glosses come from CC-CEDICT (CC BY-SA 4.0). See `vendor/cc-cedict/README.md`. A word the clusters never teach on purpose joins the list when an example needs it. 喜欢 is introduced with 蓝色, in 我喜欢蓝色。 Single-character words that never appear in an introducing sentence can be segmented, and they are not tracked.
+Spellings, pinyin, and glosses come from CC-CEDICT (CC BY-SA 4.0). See `vendor/cc-cedict/README.md`. Every dictionary word that shows up as a token in those sentences joins the list, in the order the sentences introduce it. A single character that never appears as its own token can still be segmented, and it is not tracked.
 
 Hover or tap a word in the conversation for its CC-CEDICT readings. The popup segments with the whole dictionary: forward and backward longest match, then fewer words, then fewer ordinary single characters. `npm run seed` writes `public/dict.json` and `public/lookup.js`. `npm run dict` writes those files without reseeding. The schedule keeps the recognition lexicon.
 
