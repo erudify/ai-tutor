@@ -307,7 +307,7 @@ function knownHanzi(cards: readonly Card[]): Set<string> {
   return known;
 }
 
-function countsAsKnown(card: Card): boolean {
+export function countsAsKnown(card: Card): boolean {
   return card.reps > 0 && (card.lapses === 0 || card.state === State.Review);
 }
 

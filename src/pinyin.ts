@@ -286,3 +286,34 @@ export function applyToneDigit(
 
   return { start, end: cursor, replacement, cursor: start + [...replacement].length };
 }
+
+/**
+ * Tone marks, with spaces, apostrophes, and unused digits removed.
+ * Digits 1–5 tone the same way the composer does, so wo3 and měi tiān compare equal.
+ */
+export function normalizePinyin(text: string): string {
+  const compact = text
+    .toLowerCase()
+    .replaceAll("v", "ü")
+    .replace(/[\s'’]/gu, "");
+  let result = "";
+  for (const char of compact) {
+    if (!/[0-9]/u.test(char)) {
+      result += char;
+      continue;
+    }
+    const digit = Number(char);
+    if (digit < 1 || digit > 5) continue;
+    const edit = applyToneDigit(result, result.length, digit);
+    if (!edit) continue;
+    result = result.slice(0, edit.start) + edit.replacement + result.slice(edit.end);
+  }
+  return result;
+}
+
+/** True when the typed pinyin is the expected reading. An empty reading never matches. */
+export function pinyinMatches(typed: string, expected: string): boolean {
+  const target = normalizePinyin(expected);
+  if (!target) return false;
+  return normalizePinyin(typed) === target;
+}

@@ -1,12 +1,19 @@
 import type { Corpus } from "./corpus/model";
+import type { Card } from "./srs/fsrs";
 import { CorpusEmptyError, getCorpus } from "./corpus/load";
 import { Learner } from "./learner";
 import { createClaude } from "./llm/claude";
 import { TUTOR_INSTRUCTIONS } from "./llm/prompts";
 import { rulesLlm } from "./llm/rules";
 import type { Llm } from "./llm/types";
-import { preview } from "./srs/schedule";
-import { prepareTurn, type Snapshot } from "./turn";
+import {
+  gradePractice,
+  pickPractice,
+  promptFromActive,
+  type PracticePrompt,
+} from "./srs/practice";
+import { applyEvidence, frontier, preview, renderBrief, suggest } from "./srs/schedule";
+import { prepareTurn, type Snapshot, type Trace } from "./turn";
 
 export { Learner };
 
@@ -69,6 +76,35 @@ async function readJson(request: Request): Promise<unknown> {
 function field(body: unknown, key: string): unknown {
   if (typeof body !== "object" || body === null || !(key in body)) return undefined;
   return (body as Record<string, unknown>)[key];
+}
+
+function revealedIndexes(value: unknown): number[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > 100) {
+    throw new HttpError(400, "Revealed words must be a short list of positions.");
+  }
+  const indexes: number[] = [];
+  for (const item of value) {
+    if (typeof item !== "number" || !Number.isInteger(item) || item < 0 || item > 100) {
+      throw new HttpError(400, "Revealed words must be a short list of positions.");
+    }
+    indexes.push(item);
+  }
+  return indexes;
+}
+
+function practiceResponse(input: {
+  prompt: PracticePrompt | null;
+  corpus: Corpus;
+  cards: readonly Card[];
+  trace: Trace | null;
+  now: number;
+}) {
+  return {
+    prompt: input.prompt,
+    preview: preview(input.corpus, input.cards, input.now),
+    trace: input.trace,
+  };
 }
 
 function learnerId(body: unknown, url: URL): string {
@@ -263,6 +299,91 @@ export default {
       if (request.method === "GET" && url.pathname === "/api/session") {
         const id = learnerId(null, url);
         return Response.json(await sessionPayload(env, id, Date.now()));
+      }
+      if (request.method === "GET" && url.pathname === "/api/practice") {
+        const id = learnerId(null, url);
+        const now = Date.now();
+        const corpus = await getCorpus(env.CORPUS);
+        const stub = learnerStub(env, id);
+        const view = await stub.practiceView();
+        let active = view.active;
+        if (!active) {
+          const pick = pickPractice(corpus, view.cards, view.seen, now);
+          if (pick) active = (await stub.remember({ ...pick, now })).active;
+        }
+        return Response.json(
+          practiceResponse({
+            prompt: active ? promptFromActive(corpus, active) : null,
+            corpus,
+            cards: view.cards,
+            trace: view.trace,
+            now,
+          }),
+        );
+      }
+      if (request.method === "POST" && url.pathname === "/api/practice") {
+        const body = await readJson(request);
+        const id = learnerId(body, url);
+        const hanzi = field(body, "hanzi");
+        if (typeof hanzi !== "string" || hanzi.length === 0 || hanzi.length > 200) {
+          throw new HttpError(400, "That practice sentence is missing.");
+        }
+        const revealed = revealedIndexes(field(body, "revealed"));
+        const now = Date.now();
+        const corpus = await getCorpus(env.CORPUS);
+        const stub = learnerStub(env, id);
+        const view = await stub.practiceView();
+        if (!view.active || view.active.hanzi !== hanzi) {
+          throw new HttpError(409, "That sentence is no longer the current exercise.");
+        }
+        const events = gradePractice(promptFromActive(corpus, view.active), revealed);
+        const allowed = new Set<string>();
+        for (const event of events) {
+          if (corpus.byHanzi.get(event.hanzi)?.tracked) allowed.add(event.hanzi);
+        }
+        const graded = applyEvidence(view.cards, events, allowed, now);
+        const suggestions = suggest(corpus, graded.cards, now);
+        const trace: Trace = {
+          backend: "practice",
+          events: graded.applied,
+          suggestions,
+          brief: renderBrief(frontier(corpus, graded.cards, now, []), suggestions),
+          mentions: [],
+        };
+        const saved = await stub.finishPractice({
+          now,
+          hanzi,
+          revision: view.revision,
+          cards: graded.cards,
+          trace,
+        });
+        if (!saved.ok) {
+          throw new HttpError(
+            409,
+            saved.error === "busy"
+              ? "A turn is already running for this learner."
+              : "That sentence is no longer the current exercise.",
+          );
+        }
+        const pick = pickPractice(corpus, graded.cards, view.seen, now);
+        const active = pick ? (await stub.remember({ ...pick, now })).active : null;
+        console.log(
+          JSON.stringify({
+            message: "practice complete",
+            learner: id,
+            events: trace.events.length,
+            revealed: revealed.length,
+          }),
+        );
+        return Response.json(
+          practiceResponse({
+            prompt: active ? promptFromActive(corpus, active) : null,
+            corpus,
+            cards: graded.cards,
+            trace,
+            now,
+          }),
+        );
       }
       if (request.method === "POST" && url.pathname === "/api/reset") {
         const body = await readJson(request);

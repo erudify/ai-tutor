@@ -164,6 +164,39 @@ main {
   overflow: hidden;
 }
 
+.tabs {
+  display: flex;
+  gap: 0.35rem;
+  padding: 0.7rem 0.75rem 0;
+  flex: none;
+}
+
+.tab {
+  background: transparent;
+  color: var(--ink);
+  border: 1px solid var(--line);
+  padding: 0.35rem 0.85rem;
+}
+
+.tab[aria-selected="true"] {
+  background: var(--ink);
+  color: #f8f3ea;
+  border-color: var(--ink);
+}
+
+#chat-panel,
+#practice-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+#chat-panel[hidden],
+#practice-panel[hidden] {
+  display: none;
+}
+
 #messages {
   list-style: none;
   margin: 0;
@@ -414,6 +447,81 @@ main {
 .empty {
   color: var(--soft);
   font-family: "Noto Sans SC", sans-serif;
+}
+
+#practice-stage {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem 1.2rem;
+}
+
+.practice-sentence {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: flex-start;
+  gap: 0.35rem 0.2rem;
+  max-width: 40rem;
+}
+
+.practice-slot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.practice-hanzi,
+.practice-gap {
+  font-family: "Noto Serif SC", "Songti SC", serif;
+  font-size: 2rem;
+  line-height: 1.2;
+}
+
+.practice-reading {
+  min-height: 1.25rem;
+  font-size: 0.95rem;
+  color: var(--soft);
+}
+
+.practice-reading.shown {
+  color: var(--cinnabar);
+}
+
+.practice-slot input {
+  text-align: center;
+  min-width: 4.5rem;
+  padding-left: 0.3rem;
+  padding-right: 0.3rem;
+}
+
+.practice-foot {
+  flex: none;
+  border-top: 1px solid var(--line);
+  padding: 0.8rem 1rem 1rem;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.practice-hint,
+#practice-status {
+  margin: 0;
+  color: var(--soft);
+  text-align: center;
+}
+
+#practice-status.error {
+  color: var(--cinnabar);
+}
+
+.practice-empty {
+  color: var(--soft);
+  text-align: center;
+  max-width: 24rem;
 }
 
 #composer {

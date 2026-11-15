@@ -37,30 +37,65 @@
       </form>
     </header>
     <main>
-      <section class="chat" aria-label="Conversation">
-        <ol id="messages"></ol>
-        <form id="composer">
-          <label class="sr" for="text">Message</label>
-          <textarea
-            id="text"
-            rows="2"
-            maxlength="2000"
-            spellcheck="false"
-            autocapitalize="off"
-            autocorrect="off"
-            placeholder="Say something, or ask what a word means. ni3 types nǐ."
-          ></textarea>
-          <div class="send-row">
-            <p id="status" role="status"></p>
-            <button type="submit" id="send">Send</button>
+      <section class="chat" aria-label="Tutor">
+        <div class="tabs" role="tablist" aria-label="Mode">
+          <button
+            type="button"
+            class="tab"
+            id="tab-chat"
+            role="tab"
+            aria-selected="true"
+            aria-controls="chat-panel"
+          >
+            Conversation
+          </button>
+          <button
+            type="button"
+            class="tab"
+            id="tab-practice"
+            role="tab"
+            aria-selected="false"
+            aria-controls="practice-panel"
+            tabindex="-1"
+          >
+            Pinyin
+          </button>
+        </div>
+        <div id="chat-panel" role="tabpanel" aria-labelledby="tab-chat">
+          <ol id="messages"></ol>
+          <form id="composer">
+            <label class="sr" for="text">Message</label>
+            <textarea
+              id="text"
+              rows="2"
+              maxlength="2000"
+              spellcheck="false"
+              autocapitalize="off"
+              autocorrect="off"
+              placeholder="Say something, or ask what a word means. ni3 types nǐ."
+            ></textarea>
+            <div class="send-row">
+              <p id="status" role="status"></p>
+              <button type="submit" id="send">Send</button>
+            </div>
+          </form>
+        </div>
+        <div id="practice-panel" role="tabpanel" aria-labelledby="tab-practice" hidden>
+          <div id="practice-stage"></div>
+          <div class="practice-foot">
+            <p id="practice-status" role="status"></p>
+            <p class="practice-hint">
+              Type the pinyin under the current word. A mismatch stays until it matches.
+              Escape shows the answer, and showing it counts as a miss.
+            </p>
           </div>
-        </form>
+        </div>
       </section>
       <aside class="ledger" aria-label="Schedule">
         <h2>Schedule</h2>
         <p class="lede">
-          Updated from the student's message, then offered to the tutor as optional
-          guidance.
+          Updated from the student's message or from pinyin practice, then offered to
+          the tutor as optional guidance.
         </p>
         <dl id="counts"></dl>
         <h3>Due</h3>

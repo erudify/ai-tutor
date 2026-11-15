@@ -1,4 +1,4 @@
-import { applyToneDigit } from "./pinyin.js";
+import { applyToneDigit, pinyinMatches } from "./pinyin.js";
 
 let segmentLookup = null;
 try {
@@ -23,6 +23,24 @@ const backend = document.querySelector("#backend");
 const text = document.querySelector("#text");
 const send = document.querySelector("#send");
 const form = document.querySelector("#composer");
+const chatPanel = document.querySelector("#chat-panel");
+const practicePanel = document.querySelector("#practice-panel");
+const practiceStage = document.querySelector("#practice-stage");
+const practiceStatus = document.querySelector("#practice-status");
+const tabChat = document.querySelector("#tab-chat");
+const tabPractice = document.querySelector("#tab-practice");
+
+const practice = {
+  prompt: null,
+  index: 0,
+  answers: [],
+  revealed: new Set(),
+  pending: false,
+  error: "",
+  loadedFor: "",
+};
+
+let practiceEpoch = 0;
 
 const state = {
   messages: [],
@@ -438,6 +456,9 @@ function renderLedger() {
     addText(traceBox, "p", "muted", "No turn yet.");
     return;
   }
+  if (trace.backend === "practice") {
+    addText(traceBox, "p", "muted", "Pinyin practice.");
+  }
   if (!trace.events || trace.events.length === 0) {
     addText(traceBox, "p", "muted", "No memory evidence in that message.");
   } else {
@@ -557,6 +578,24 @@ form.addEventListener("submit", async (event) => {
   }
 });
 
+function applyComposerTone(event) {
+  const el = event.currentTarget;
+  if (!(el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement)) return;
+  if (event.isComposing || event.key === "Process") return;
+  if (event.altKey || event.ctrlKey || event.metaKey) return;
+  if (!/^[1-5]$/.test(event.key)) return;
+  const start = el.selectionStart;
+  const end = el.selectionEnd;
+  if (start === null || end === null || start !== end) return;
+  const edit = applyToneDigit(el.value, start, Number(event.key));
+  if (!edit) return;
+  event.preventDefault();
+  if (el.value.slice(edit.start, edit.end) !== edit.replacement) {
+    el.setRangeText(edit.replacement, edit.start, edit.end, "end");
+  }
+  el.setSelectionRange(edit.cursor, edit.cursor);
+}
+
 text.addEventListener("keydown", (event) => {
   if (event.isComposing || event.key === "Process") return;
   if (event.key === "Enter" && !event.shiftKey) {
@@ -564,22 +603,238 @@ text.addEventListener("keydown", (event) => {
     form.requestSubmit();
     return;
   }
-  if (event.altKey || event.ctrlKey || event.metaKey) return;
-  if (!/^[1-5]$/.test(event.key)) return;
-  const start = text.selectionStart;
-  const end = text.selectionEnd;
-  if (start === null || end === null || start !== end) return;
-  const edit = applyToneDigit(text.value, start, Number(event.key));
-  if (!edit) return;
-  event.preventDefault();
-  if (text.value.slice(edit.start, edit.end) !== edit.replacement) {
-    text.setRangeText(edit.replacement, edit.start, edit.end, "end");
-  }
-  text.setSelectionRange(edit.cursor, edit.cursor);
+  applyComposerTone(event);
 });
 
+function wordPieces(prompt) {
+  return (prompt?.pieces || []).filter((piece) => piece.kind === "word");
+}
+
+function renderPractice() {
+  clear(practiceStage);
+  practiceStatus.className = practice.error ? "error" : "";
+  practiceStatus.textContent =
+    practice.error || (practice.pending ? "Saving this sentence…" : "");
+  const prompt = practice.prompt;
+  if (!prompt) {
+    if (practice.loadedFor) {
+      addText(
+        practiceStage,
+        "p",
+        "practice-empty",
+        "Nothing is due, and the curriculum on file is finished.",
+      );
+    }
+    return;
+  }
+  const words = wordPieces(prompt);
+  const sentence = document.createElement("div");
+  sentence.className = "practice-sentence";
+  sentence.lang = "zh-Hans";
+  let wordIndex = 0;
+  for (const piece of prompt.pieces) {
+    if (piece.kind === "gap") {
+      addText(sentence, "span", "practice-gap", piece.text);
+      continue;
+    }
+    const slotIndex = wordIndex;
+    const slot = document.createElement("div");
+    slot.className = "practice-slot";
+    addText(slot, "span", "practice-hanzi", piece.hanzi);
+    const reading = addText(slot, "span", "practice-reading", "");
+    const revealed = practice.revealed.has(slotIndex);
+    if (slotIndex < practice.index) {
+      reading.textContent = practice.answers[slotIndex] || "";
+      if (revealed) reading.classList.add("shown");
+    } else if (slotIndex === practice.index) {
+      if (revealed) {
+        reading.textContent = piece.pinyin;
+        reading.classList.add("shown");
+      }
+      const input = document.createElement("input");
+      input.type = "text";
+      input.spellcheck = false;
+      input.autocomplete = "off";
+      input.setAttribute("autocapitalize", "off");
+      input.setAttribute("autocorrect", "off");
+      input.setAttribute("aria-label", `Pinyin for ${piece.hanzi}`);
+      input.disabled = practice.pending;
+      input.style.width = `${Math.max(piece.pinyin.length + 1, 4)}ch`;
+      const consider = () => {
+        if (!input.isConnected || practice.pending) return;
+        if (!pinyinMatches(input.value, piece.pinyin)) return;
+        practice.answers[slotIndex] = input.value;
+        practice.index = slotIndex + 1;
+        if (practice.index >= words.length) {
+          void submitPractice();
+          return;
+        }
+        renderPractice();
+      };
+      input.addEventListener("keydown", (event) => {
+        if (event.isComposing || event.key === "Process") return;
+        if (event.key === "Escape") {
+          event.preventDefault();
+          event.stopPropagation();
+          hideLookup();
+          if (practice.revealed.has(slotIndex) || practice.pending) return;
+          const draft = input.value;
+          practice.revealed.add(slotIndex);
+          renderPractice();
+          const next = practiceStage.querySelector("input");
+          if (next instanceof HTMLInputElement) {
+            next.value = draft;
+            const end = next.value.length;
+            next.setSelectionRange(end, end);
+            next.focus();
+          }
+          return;
+        }
+        applyComposerTone(event);
+        consider();
+      });
+      input.addEventListener("input", (event) => {
+        if (event.isComposing) return;
+        consider();
+      });
+      slot.append(input);
+    }
+    sentence.append(slot);
+    wordIndex += 1;
+  }
+  practiceStage.append(sentence);
+  if (practice.error && practice.index >= words.length && !practice.pending) {
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.textContent = "Save again";
+    retry.addEventListener("click", () => void submitPractice());
+    practiceStage.append(retry);
+  }
+  const input = practiceStage.querySelector("input");
+  if (input instanceof HTMLInputElement && !practicePanel.hidden && !practice.pending) {
+    input.focus();
+  }
+}
+
+function acceptPrompt(prompt) {
+  practice.prompt = prompt;
+  practice.index = 0;
+  practice.answers = [];
+  practice.revealed = new Set();
+  practice.pending = false;
+  practice.error = "";
+  practice.loadedFor = learnerId();
+  renderPractice();
+}
+
+async function loadPractice() {
+  const epoch = ++practiceEpoch;
+  const learner = learnerId();
+  practice.pending = false;
+  practice.error = "";
+  practice.prompt = null;
+  practice.loadedFor = "";
+  practiceStatus.className = "";
+  practiceStatus.textContent = "Loading a sentence…";
+  clear(practiceStage);
+  try {
+    const response = await fetch(
+      `/api/practice?learner=${encodeURIComponent(learner)}`,
+    );
+    const body = await response.json();
+    if (epoch !== practiceEpoch) return;
+    if (!response.ok) throw new Error(body.error || "Could not load pinyin practice.");
+    if (body.preview) state.preview = body.preview;
+    if (body.trace) state.trace = body.trace;
+    acceptPrompt(body.prompt);
+    render();
+  } catch (error) {
+    if (epoch !== practiceEpoch) return;
+    practice.error =
+      error instanceof Error ? error.message : "Could not load pinyin practice.";
+    practice.loadedFor = "";
+    renderPractice();
+  }
+}
+
+async function submitPractice() {
+  const prompt = practice.prompt;
+  if (!prompt || practice.pending) return;
+  const epoch = ++practiceEpoch;
+  practice.pending = true;
+  practice.error = "";
+  renderPractice();
+  try {
+    const response = await fetch("/api/practice", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        learner: learnerId(),
+        hanzi: prompt.hanzi,
+        revealed: [...practice.revealed],
+      }),
+    });
+    const body = await response.json();
+    if (epoch !== practiceEpoch) return;
+    if (response.status === 409) {
+      await loadPractice();
+      return;
+    }
+    if (!response.ok) throw new Error(body.error || "Could not save this sentence.");
+    state.preview = body.preview;
+    state.trace = body.trace;
+    state.error = "";
+    acceptPrompt(body.prompt);
+    render();
+  } catch (error) {
+    if (epoch !== practiceEpoch) return;
+    practice.pending = false;
+    practice.error =
+      error instanceof Error ? error.message : "Could not save this sentence.";
+    renderPractice();
+  }
+}
+
+function forgetPractice() {
+  practiceEpoch += 1;
+  practice.prompt = null;
+  practice.index = 0;
+  practice.answers = [];
+  practice.revealed = new Set();
+  practice.pending = false;
+  practice.error = "";
+  practice.loadedFor = "";
+  if (practicePanel.hidden) renderPractice();
+  else void loadPractice();
+}
+
+function selectTab(mode) {
+  const practiceOn = mode === "practice";
+  chatPanel.hidden = practiceOn;
+  practicePanel.hidden = !practiceOn;
+  tabChat.setAttribute("aria-selected", practiceOn ? "false" : "true");
+  tabPractice.setAttribute("aria-selected", practiceOn ? "true" : "false");
+  tabChat.tabIndex = practiceOn ? -1 : 0;
+  tabPractice.tabIndex = practiceOn ? 0 : -1;
+  if (!practiceOn) return;
+  if (practice.loadedFor !== learnerId()) void loadPractice();
+  else renderPractice();
+}
+
+tabChat.addEventListener("click", () => selectTab("chat"));
+tabPractice.addEventListener("click", () => selectTab("practice"));
+for (const tab of [tabChat, tabPractice]) {
+  tab.addEventListener("keydown", (event) => {
+    if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return;
+    event.preventDefault();
+    const toPractice = tabPractice.getAttribute("aria-selected") !== "true";
+    selectTab(toPractice ? "practice" : "chat");
+    (toPractice ? tabPractice : tabChat).focus();
+  });
+}
+
 document.querySelector("#reset").addEventListener("click", async () => {
-  if (!confirm("Clear this learner's messages and schedule?")) return;
+  if (!confirm("Clear this learner's messages, schedule, and pinyin progress?")) return;
   invalidateView();
   state.pending = true;
   render();
@@ -596,6 +851,7 @@ document.querySelector("#reset").addEventListener("click", async () => {
     state.preview = body.preview;
     state.trace = body.trace;
     state.error = "";
+    forgetPractice();
   } catch (error) {
     state.error = error instanceof Error ? error.message : "Reset failed.";
   } finally {
@@ -609,6 +865,7 @@ learnerInput.addEventListener("change", () => {
   state.trace = null;
   state.preview = null;
   state.error = "";
+  forgetPractice();
   render();
   loadSession();
 });

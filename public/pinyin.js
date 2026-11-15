@@ -239,4 +239,28 @@ function applyToneDigit(text, cursor, digit) {
   }
   return { start, end: cursor, replacement, cursor: start + [...replacement].length };
 }
-export { PINYIN_SYLLABLES, applyToneDigit };
+function normalizePinyin(text) {
+  const compact = text
+    .toLowerCase()
+    .replaceAll("v", "ü")
+    .replace(/[\s'’]/gu, "");
+  let result = "";
+  for (const char of compact) {
+    if (!/[0-9]/u.test(char)) {
+      result += char;
+      continue;
+    }
+    const digit = Number(char);
+    if (digit < 1 || digit > 5) continue;
+    const edit = applyToneDigit(result, result.length, digit);
+    if (!edit) continue;
+    result = result.slice(0, edit.start) + edit.replacement + result.slice(edit.end);
+  }
+  return result;
+}
+function pinyinMatches(typed, expected) {
+  const target = normalizePinyin(expected);
+  if (!target) return false;
+  return normalizePinyin(typed) === target;
+}
+export { PINYIN_SYLLABLES, applyToneDigit, normalizePinyin, pinyinMatches };

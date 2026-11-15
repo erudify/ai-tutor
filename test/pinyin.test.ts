@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { applyToneDigit, PINYIN_SYLLABLES, type PinyinEdit } from "../src/pinyin";
+import {
+  applyToneDigit,
+  PINYIN_SYLLABLES,
+  pinyinMatches,
+  type PinyinEdit,
+} from "../src/pinyin";
 
 function typePinyin(input: string): string {
   let text = "";
@@ -142,5 +147,31 @@ describe("pinyin tones", () => {
     }
     expect(shipped("nǐhǎo", 5, 5)).toEqual(applyToneDigit("nǐhǎo", 5, 5));
     expect(shipped("hello", 5, 1)).toBeNull();
+    const shippedMatches = (
+      (await import(href)) as { pinyinMatches: typeof pinyinMatches }
+    ).pinyinMatches;
+    expect(shippedMatches("wo3", "wǒ")).toBe(true);
+    expect(shippedMatches("mei3 tian1", "měi tiān")).toBe(true);
+  });
+});
+
+describe("pinyin answers", () => {
+  it("treats tone digits, spaces, and v as the marked reading", () => {
+    expect(pinyinMatches("wo3", "wǒ")).toBe(true);
+    expect(pinyinMatches("wǒ", "wǒ")).toBe(true);
+    expect(pinyinMatches("WO3", "wǒ")).toBe(true);
+    expect(pinyinMatches("mei3tian1", "měi tiān")).toBe(true);
+    expect(pinyinMatches("mei3 tian1", "měi tiān")).toBe(true);
+    expect(pinyinMatches("shang4ban1", "shàng bān")).toBe(true);
+    expect(pinyinMatches("nv3", "nǚ")).toBe(true);
+    expect(pinyinMatches("nü3", "nǚ")).toBe(true);
+  });
+
+  it("rejects a wrong tone and an empty reading", () => {
+    expect(pinyinMatches("wo1", "wǒ")).toBe(false);
+    expect(pinyinMatches("wo", "wǒ")).toBe(false);
+    expect(pinyinMatches("wǒx", "wǒ")).toBe(false);
+    expect(pinyinMatches("wǒ", "")).toBe(false);
+    expect(pinyinMatches("", "wǒ")).toBe(false);
   });
 });

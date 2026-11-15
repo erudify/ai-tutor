@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { State, type Card, type StateValue } from "./srs/fsrs";
+import type { PracticePurpose } from "./srs/practice";
 import type { Trace } from "./turn";
 
 type DialogueMessage = { role: "user" | "assistant"; content: string };
@@ -36,6 +37,35 @@ export type CommitInput = {
   now: number;
   studentText: string;
   reply: string;
+  cards: Card[];
+  trace: Trace;
+};
+
+export type PracticeActive = {
+  hanzi: string;
+  purpose: PracticePurpose;
+  focus: string | null;
+};
+
+export type PracticeView = {
+  cards: Card[];
+  seen: { hanzi: string; shownAt: number }[];
+  active: PracticeActive | null;
+  revision: number;
+  trace: Trace | null;
+};
+
+export type RememberInput = {
+  hanzi: string;
+  purpose: PracticePurpose;
+  focus: string | null;
+  now: number;
+};
+
+export type FinishPracticeInput = {
+  now: number;
+  hanzi: string;
+  revision: number;
   cards: Card[];
   trace: Trace;
 };
@@ -152,8 +182,92 @@ export class Learner extends DurableObject<Env> {
         "DELETE FROM traces WHERE id NOT IN (SELECT id FROM traces ORDER BY id DESC LIMIT 20)",
       );
       this.sql.exec("DELETE FROM meta WHERE key IN ('busy_until', 'token')");
+      this.bumpRevision();
     });
     return { ok: true };
+  }
+
+  practiceView(): PracticeView {
+    return {
+      cards: this.cards(),
+      seen: this.seenSentences(),
+      active: this.activePractice(),
+      revision: this.revision(),
+      trace: this.lastTrace(),
+    };
+  }
+
+  /**
+   * Remember the sentence the student is looking at.
+   * A sentence already in progress wins, so a refresh does not reshuffle it.
+   */
+  remember(input: RememberInput): { ok: true; active: PracticeActive } {
+    const existing = this.activePractice();
+    if (existing) return { ok: true, active: existing };
+    const active: PracticeActive = {
+      hanzi: input.hanzi,
+      purpose: input.purpose === "introduce" ? "introduce" : "review",
+      focus: input.focus,
+    };
+    this.ctx.storage.transactionSync(() => {
+      this.sql.exec(
+        `INSERT INTO seen_sentences (hanzi, shown_at) VALUES (?, ?)
+         ON CONFLICT(hanzi) DO UPDATE SET shown_at = excluded.shown_at`,
+        active.hanzi,
+        input.now,
+      );
+      this.setMeta("practice", active.hanzi);
+      this.setMeta("practice_purpose", active.purpose);
+      this.setMeta("practice_focus", active.focus ?? "");
+    });
+    return { ok: true, active };
+  }
+
+  finishPractice(
+    input: FinishPracticeInput,
+  ): { ok: true } | { ok: false; error: "busy" | "stale" } {
+    let result: { ok: true } | { ok: false; error: "busy" | "stale" } = {
+      ok: false,
+      error: "stale",
+    };
+    this.ctx.storage.transactionSync(() => {
+      if (this.metaNumber("busy_until") > input.now) {
+        result = { ok: false, error: "busy" };
+        return;
+      }
+      if (this.meta("practice") !== input.hanzi || this.revision() !== input.revision) {
+        result = { ok: false, error: "stale" };
+        return;
+      }
+      for (const card of input.cards) this.writeCard(card);
+      for (const event of input.trace.events) {
+        this.sql.exec(
+          "INSERT INTO reviews (id, hanzi, rating, outcome, quote, at, stability, due) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+          crypto.randomUUID(),
+          event.hanzi,
+          event.rating,
+          event.outcome,
+          event.quote,
+          input.now,
+          event.stability,
+          event.dueAt,
+        );
+      }
+      this.sql.exec(
+        "INSERT INTO traces (at, payload) VALUES (?, ?)",
+        input.now,
+        JSON.stringify(input.trace),
+      );
+      this.sql.exec(
+        "DELETE FROM traces WHERE id NOT IN (SELECT id FROM traces ORDER BY id DESC LIMIT 20)",
+      );
+      this.sql.exec(
+        "DELETE FROM meta WHERE key IN ('practice', 'practice_purpose', 'practice_focus')",
+      );
+      this.bumpRevision();
+      result = { ok: true };
+    });
+    return result;
   }
 
   reset(): { ok: true } {
@@ -162,6 +276,7 @@ export class Learner extends DurableObject<Env> {
       this.sql.exec("DELETE FROM reviews");
       this.sql.exec("DELETE FROM messages");
       this.sql.exec("DELETE FROM traces");
+      this.sql.exec("DELETE FROM seen_sentences");
       this.sql.exec("DELETE FROM meta");
     });
     return { ok: true };
@@ -210,6 +325,10 @@ export class Learner extends DurableObject<Env> {
     this.sql.exec(`CREATE TABLE IF NOT EXISTS meta (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
+    )`);
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS seen_sentences (
+      hanzi TEXT PRIMARY KEY,
+      shown_at INTEGER NOT NULL
     )`);
   }
 
@@ -300,6 +419,66 @@ export class Learner extends DurableObject<Env> {
     } catch {
       return null;
     }
+  }
+
+  private seenSentences(): { hanzi: string; shownAt: number }[] {
+    return this.sql
+      .exec<{ hanzi: string; shown_at: number }>(
+        "SELECT hanzi, shown_at FROM seen_sentences",
+      )
+      .toArray()
+      .map((row) => ({ hanzi: row.hanzi, shownAt: row.shown_at }));
+  }
+
+  private activePractice(): PracticeActive | null {
+    const hanzi = this.meta("practice");
+    if (!hanzi) return null;
+    const purpose = this.meta("practice_purpose");
+    const focus = this.meta("practice_focus");
+    return {
+      hanzi,
+      purpose: purpose === "introduce" ? "introduce" : "review",
+      focus: focus ? focus : null,
+    };
+  }
+
+  private revision(): number {
+    return this.metaNumber("schedule_rev");
+  }
+
+  private bumpRevision(): void {
+    this.setMeta("schedule_rev", String(this.revision() + 1));
+  }
+
+  private writeCard(card: Card): void {
+    this.sql.exec(
+      `INSERT INTO cards (
+        hanzi, state, stability, difficulty, due, last_review, reps, lapses,
+        elapsed_days, scheduled_days, learning_step
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(hanzi) DO UPDATE SET
+        state = excluded.state,
+        stability = excluded.stability,
+        difficulty = excluded.difficulty,
+        due = excluded.due,
+        last_review = excluded.last_review,
+        reps = excluded.reps,
+        lapses = excluded.lapses,
+        elapsed_days = excluded.elapsed_days,
+        scheduled_days = excluded.scheduled_days,
+        learning_step = excluded.learning_step`,
+      card.hanzi,
+      card.state,
+      card.stability,
+      card.difficulty,
+      card.due,
+      card.lastReview,
+      card.reps,
+      card.lapses,
+      card.elapsedDays,
+      card.scheduledDays,
+      card.learningStep,
+    );
   }
 
   private meta(key: string): string | null {
