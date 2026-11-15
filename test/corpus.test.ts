@@ -8,6 +8,8 @@ import { curriculumTokens, pickExample } from "../src/corpus/examples";
 import { indexCorpus } from "../src/corpus/model";
 import { parseSentenceFile } from "../src/corpus/parse";
 import { Segmenter } from "../src/corpus/segment";
+import { alignSentencePinyin, pinyinSlice } from "../src/sentence-pinyin";
+import { promptFromActive } from "../src/srs/practice";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -61,6 +63,29 @@ describe("vendored curriculum", () => {
       head,
     ).toEqual(["的", "我", "是", "这", "书"]);
     expect(corpus.curriculum[0]?.exampleHanzi).toBe("这是我的书。");
+    const opening = promptFromActive(corpus, {
+      hanzi: "这是我的书。",
+      purpose: "introduce",
+      focus: "的",
+    });
+    expect(opening.pieces).toEqual([
+      { kind: "word", hanzi: "这", pinyin: "zhè" },
+      { kind: "word", hanzi: "是", pinyin: "shì" },
+      { kind: "word", hanzi: "我", pinyin: "wǒ" },
+      { kind: "word", hanzi: "的", pinyin: "de" },
+      { kind: "word", hanzi: "书", pinyin: "shū" },
+      { kind: "gap", text: "。" },
+    ]);
+    const trip = built.sentences.find(
+      (sentence) => sentence.hanzi === "我们明天要去她家。",
+    );
+    expect(trip?.pinyin).toBe("Wǒmen míngtiān yào qù tā jiā.");
+    const tripSpans = alignSentencePinyin(trip?.hanzi ?? "", trip?.pinyin ?? "");
+    expect(tripSpans).not.toBeNull();
+    const yaoAt = trip?.hanzi.indexOf("要") ?? -1;
+    expect(pinyinSlice(trip?.pinyin ?? "", tripSpans ?? [], yaoAt, yaoAt + 1)).toBe(
+      "yào",
+    );
     expect(corpus.byHanzi.get("喜欢")?.curriculum).toBe(true);
     for (const hanzi of ["饺子", "蓝色", "鼻子", "考虑", "阿姨"]) {
       expect(curriculum.has(hanzi), hanzi).toBe(true);

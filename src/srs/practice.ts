@@ -1,5 +1,6 @@
 import type { Corpus } from "../corpus/model";
 import type { IndexedExample } from "../corpus/examples";
+import { alignSentencePinyin, pinyinSlice } from "../sentence-pinyin";
 import { fsrs, State, type Card } from "./fsrs";
 import { countsAsKnown, stableHanzi, type Evidence } from "./schedule";
 
@@ -118,25 +119,45 @@ function findExample(corpus: Corpus, hanzi: string): IndexedExample | null {
   return null;
 }
 
+function sentenceAligns(example: IndexedExample): boolean {
+  return alignSentencePinyin(example.hanzi, example.pinyin) !== null;
+}
+
 function align(
   hanzi: string,
   tokens: readonly string[],
-  pinyinFor: (token: string) => string,
+  readingFor: (start: number, end: number) => string,
 ): PracticePiece[] {
   const pieces: PracticePiece[] = [];
   let cursor = 0;
   for (const token of tokens) {
     const at = hanzi.indexOf(token, cursor);
     if (at < 0) {
-      pieces.push({ kind: "word", hanzi: token, pinyin: pinyinFor(token) });
+      pieces.push({ kind: "word", hanzi: token, pinyin: "" });
       continue;
     }
     if (at > cursor) pieces.push({ kind: "gap", text: hanzi.slice(cursor, at) });
-    pieces.push({ kind: "word", hanzi: token, pinyin: pinyinFor(token) });
+    pieces.push({
+      kind: "word",
+      hanzi: token,
+      pinyin: readingFor(at, at + token.length),
+    });
     cursor = at + token.length;
   }
   if (cursor < hanzi.length) pieces.push({ kind: "gap", text: hanzi.slice(cursor) });
   return pieces;
+}
+
+/** Per-word readings taken from the sentence file. Never the dictionary. */
+function piecesFromSentence(
+  hanzi: string,
+  tokens: readonly string[],
+  pinyin: string,
+): PracticePiece[] {
+  const spans = alignSentencePinyin(hanzi, pinyin);
+  return align(hanzi, tokens, (start, end) =>
+    spans ? (pinyinSlice(pinyin, spans, start, end) ?? "") : "",
+  );
 }
 
 /**
@@ -145,6 +166,7 @@ function align(
  * Something due: one sentence for the most urgent word. Prefer companions the
  * student knows well, then a sentence they have not seen, then the one shown
  * furthest in the past.
+ * A sentence is eligible only when its file pinyin lines up with its characters.
  */
 export function pickPractice(
   corpus: Corpus,
@@ -161,7 +183,9 @@ export function pickPractice(
   for (const card of dueCards(cards, now)) {
     const word = corpus.byHanzi.get(card.hanzi);
     if (!word) continue;
-    const options = corpus.examplesByToken.get(word.hanzi) ?? [];
+    const options = (corpus.examplesByToken.get(word.hanzi) ?? []).filter(
+      sentenceAligns,
+    );
     const chosen = bestSentence(options, word.hanzi, stable, known, seenAt);
     if (chosen) {
       return { hanzi: chosen.hanzi, purpose: "review", focus: word.hanzi };
@@ -172,23 +196,27 @@ export function pickPractice(
   const next = corpus.curriculum.find((word) => !held.has(word.hanzi));
   if (!next) return null;
   const hanzi = next.exampleHanzi.trim() || next.hanzi;
-  return { hanzi, purpose: "introduce", focus: next.hanzi };
+  const example = findExample(corpus, hanzi);
+  if (example && sentenceAligns(example)) {
+    return { hanzi: example.hanzi, purpose: "introduce", focus: next.hanzi };
+  }
+  return { hanzi: next.hanzi, purpose: "introduce", focus: next.hanzi };
 }
 
 export function promptFromActive(
   corpus: Corpus,
   active: PracticeActive,
 ): PracticePrompt {
-  const pinyinFor = (token: string) => corpus.byHanzi.get(token)?.pinyin ?? "";
   const example = findExample(corpus, active.hanzi);
   if (example) {
     return {
       hanzi: active.hanzi,
       purpose: active.purpose,
       focus: active.focus,
-      pieces: align(example.hanzi, example.tokens, pinyinFor),
+      pieces: piecesFromSentence(example.hanzi, example.tokens, example.pinyin),
     };
   }
+  // A word shown on its own uses its dictionary reading. That prompt is not a sentence.
   const word = corpus.byHanzi.get(active.hanzi);
   if (word?.pinyin) {
     return {
@@ -198,23 +226,12 @@ export function promptFromActive(
       pieces: [{ kind: "word", hanzi: word.hanzi, pinyin: word.pinyin }],
     };
   }
-  const pieces: PracticePiece[] = [];
-  for (const part of corpus.segmenter.segment(active.hanzi)) {
-    if (part.kind === "word") {
-      const reading = pinyinFor(part.hanzi);
-      if (reading) {
-        pieces.push({ kind: "word", hanzi: part.hanzi, pinyin: reading });
-        continue;
-      }
-      pieces.push({ kind: "gap", text: part.hanzi });
-      continue;
-    }
-    pieces.push({
-      kind: "gap",
-      text: part.kind === "other" ? part.text : part.hanzi,
-    });
-  }
-  return { hanzi: active.hanzi, purpose: active.purpose, focus: active.focus, pieces };
+  return {
+    hanzi: active.hanzi,
+    purpose: active.purpose,
+    focus: active.focus,
+    pieces: [{ kind: "gap", text: active.hanzi }],
+  };
 }
 
 /** One event per word. A revealed slot is a recall miss. Duplicates merge later. */

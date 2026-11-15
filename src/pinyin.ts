@@ -59,6 +59,19 @@ wu wa wai wan wang wei wen weng wo
 
 const legalSyllables = new Set(PINYIN_SYLLABLES);
 
+/**
+ * Sentence files write nüe as one syllable (虐).
+ * The composer still splits a typed nue into nü + e.
+ */
+const sentenceSyllables = new Set<string>(PINYIN_SYLLABLES);
+sentenceSyllables.add("nüe");
+const sentencePrefixes = new Set<string>();
+for (const syllable of sentenceSyllables) {
+  for (let length = 1; length <= syllable.length; length += 1) {
+    sentencePrefixes.add(syllable.slice(0, length));
+  }
+}
+
 export type PinyinEdit = {
   start: number;
   end: number;
@@ -183,7 +196,19 @@ function normalizeRun(run: string): string {
   return chars.join("");
 }
 
-function parseSyllableEnd(sequence: string, start: number): number {
+function startsWithSentenceSyllable(sequence: string): boolean {
+  for (let end = 1; end <= sequence.length; end += 1) {
+    if (sentenceSyllables.has(canonicalSyllable(sequence.slice(0, end)))) return true;
+  }
+  return false;
+}
+
+function parseSyllableEnd(
+  sequence: string,
+  start: number,
+  splitNue: boolean,
+  breakAfterSyllable: boolean,
+): number {
   let i = start;
   const consonantStart = i;
   while (i < sequence.length && !isVowel(sequence[i] ?? "")) i += 1;
@@ -191,10 +216,25 @@ function parseSyllableEnd(sequence: string, start: number): number {
   const initial = sequence.slice(consonantStart, i).toLowerCase();
   const vowelStart = i;
   while (i < sequence.length && isVowel(sequence[i] ?? "")) {
-    if (i > vowelStart) {
+    if (splitNue && i > vowelStart) {
       const prev = getBaseVowel(sequence[i - 1] ?? "");
       const current = getBaseVowel(sequence[i] ?? "");
       if (prev === "ü" && current === "e" && initial === "n") break;
+    }
+    if (breakAfterSyllable && i > vowelStart) {
+      const previous = sequence[i - 1] ?? "";
+      const incoming = sequence[i] ?? "";
+      // Two tone marks are two syllables: nǚér is 女 + 儿, nüè is one syllable.
+      if (isTonedVowel(previous) && isTonedVowel(incoming)) break;
+      const soFar = canonicalSyllable(sequence.slice(start, i));
+      const extended = canonicalSyllable(sequence.slice(start, i + 1));
+      if (
+        sentenceSyllables.has(soFar) &&
+        !sentencePrefixes.has(extended) &&
+        startsWithSentenceSyllable(sequence.slice(i))
+      ) {
+        break;
+      }
     }
     i += 1;
   }
@@ -205,6 +245,9 @@ function parseSyllableEnd(sequence: string, start: number): number {
       if (next === "g") {
         const after = sequence[i + 2];
         i += after !== undefined && isVowel(after) ? 1 : 2;
+      } else if (next === "r") {
+        const afterR = sequence[i + 2];
+        i += afterR === undefined || !isVowel(afterR) ? 2 : 1;
       } else if (next === undefined || !isVowel(sequence[i + 1] ?? "")) {
         i += 1;
       }
@@ -220,14 +263,23 @@ function parseSyllableEnd(sequence: string, start: number): number {
 
 type Slice = { start: number; end: number; syllable: string };
 
-function parseSyllables(sequence: string): Slice[] | null {
+function parseSyllables(
+  sequence: string,
+  splitNue = true,
+  breakAfterSyllable = false,
+): Slice[] | null {
   const syllables: Slice[] = [];
   let i = 0;
   while (i < sequence.length) {
     const syllableStart = i;
     while (i < sequence.length && !isVowel(sequence[i] ?? "")) i += 1;
     if (i >= sequence.length) return null;
-    const syllableEnd = parseSyllableEnd(sequence, syllableStart);
+    const syllableEnd = parseSyllableEnd(
+      sequence,
+      syllableStart,
+      splitNue,
+      breakAfterSyllable,
+    );
     if (syllableEnd <= syllableStart) return null;
     syllables.push({
       start: syllableStart,
@@ -309,6 +361,75 @@ export function normalizePinyin(text: string): string {
     result = result.slice(0, edit.start) + edit.replacement + result.slice(edit.end);
   }
   return result;
+}
+
+function isDigit(char: string): boolean {
+  return char >= "0" && char <= "9";
+}
+
+/**
+ * A final r that is not its own syllable (nǎr, yīhuìr) is the character 儿.
+ * èr, ér, and ěr stay one syllable.
+ */
+function expandErhua(
+  start: number,
+  end: number,
+  text: string,
+): { start: number; end: number }[] {
+  const tail = text.slice(-1);
+  if (tail !== "r" && tail !== "R") return [{ start, end }];
+  const base = text.slice(0, -1);
+  if (!base) return [{ start, end }];
+  if (legalSyllables.has(canonicalSyllable(text))) return [{ start, end }];
+  if (!legalSyllables.has(canonicalSyllable(base))) return [{ start, end }];
+  return [
+    { start, end: end - 1 },
+    { start: end - 1, end },
+  ];
+}
+
+/**
+ * Syllables of a sentence file's pinyin, in order.
+ * A digit run is one unit. An erhua r is its own unit, for 儿.
+ * nüe stays one syllable. Spaces, apostrophes, and punctuation are not units.
+ * Null when a letter run cannot be split into syllables.
+ */
+export function suppliedPinyinUnits(
+  pinyin: string,
+): { start: number; end: number }[] | null {
+  const units: { start: number; end: number }[] = [];
+  let i = 0;
+  while (i < pinyin.length) {
+    const char = pinyin[i] ?? "";
+    if (isDigit(char)) {
+      const start = i;
+      i += 1;
+      while (i < pinyin.length && isDigit(pinyin[i] ?? "")) i += 1;
+      units.push({ start, end: i });
+      continue;
+    }
+    if (!isPinyinChar(char)) {
+      i += 1;
+      continue;
+    }
+    const runStart = i;
+    i += 1;
+    while (i < pinyin.length && isPinyinChar(pinyin[i] ?? "")) i += 1;
+    const normalized = normalizeRun(pinyin.slice(runStart, i));
+    if (normalized.length === 1 && (normalized === "r" || normalized === "R")) {
+      units.push({ start: runStart, end: i });
+      continue;
+    }
+    const syllables = parseSyllables(normalized, false, true);
+    if (!syllables) return null;
+    for (const syllable of syllables) {
+      const text = normalized.slice(syllable.start, syllable.end);
+      units.push(
+        ...expandErhua(runStart + syllable.start, runStart + syllable.end, text),
+      );
+    }
+  }
+  return units;
 }
 
 /** True when the typed pinyin is the expected reading. An empty reading never matches. */

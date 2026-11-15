@@ -25,8 +25,8 @@ function word(
   };
 }
 
-function sentence(hanzi: string): BuiltSentence {
-  return { id: hanzi, hanzi, pinyin: "", english: "" };
+function sentence(hanzi: string, pinyin: string): BuiltSentence {
+  return { id: hanzi, hanzi, pinyin, english: "" };
 }
 
 const corpus = indexCorpus(
@@ -81,11 +81,11 @@ const corpus = indexCorpus(
     }),
   ],
   [
-    sentence("我在学校。"),
-    sentence("我每天上班。"),
-    sentence("我上班。"),
-    sentence("学校上班。"),
-    sentence("每天上班。"),
+    sentence("我在学校。", "wǒ zài xuéxiào."),
+    sentence("我每天上班。", "wǒ měitiān shàngbān."),
+    sentence("我上班。", "wǒ shàngbān."),
+    sentence("学校上班。", "xuéxiào shàngbān."),
+    sentence("每天上班。", "měitiān shàngbān."),
   ],
 );
 
@@ -113,7 +113,7 @@ describe("pickPractice", () => {
     expect(prompt.pieces).toEqual([
       { kind: "word", hanzi: "我", pinyin: "wǒ" },
       { kind: "word", hanzi: "在", pinyin: "zài" },
-      { kind: "word", hanzi: "学校", pinyin: "xué xiào" },
+      { kind: "word", hanzi: "学校", pinyin: "xuéxiào" },
       { kind: "gap", text: "。" },
     ]);
   });
@@ -195,7 +195,7 @@ describe("pickPractice", () => {
           exampleHanzi: "每天上班。",
         }),
       ],
-      [sentence("每天上班。")],
+      [sentence("每天上班。", "měitiān shàngbān.")],
     );
     expect(
       pickPractice(
@@ -205,6 +205,114 @@ describe("pickPractice", () => {
         now,
       ),
     ).toEqual({ hanzi: "每天上班。", purpose: "review", focus: "上班" });
+  });
+
+  it("reads 要 as yào from the sentence file", () => {
+    const hanzi = "我们明天要去她家。";
+    const trip = indexCorpus(
+      [
+        word({
+          hanzi: "我们",
+          gloss: "we",
+          pinyin: "wǒ men",
+          ord: 0,
+          curriculum: true,
+          exampleHanzi: hanzi,
+        }),
+        word({
+          hanzi: "明天",
+          gloss: "tomorrow",
+          pinyin: "míng tiān",
+          ord: 1,
+          curriculum: true,
+          exampleHanzi: hanzi,
+        }),
+        word({
+          hanzi: "要",
+          gloss: "to demand",
+          pinyin: "yāo",
+          ord: 2,
+          curriculum: true,
+          exampleHanzi: hanzi,
+        }),
+        word({
+          hanzi: "去",
+          gloss: "go",
+          pinyin: "qù",
+          ord: 3,
+          curriculum: true,
+          exampleHanzi: hanzi,
+        }),
+        word({
+          hanzi: "她",
+          gloss: "she",
+          pinyin: "tā",
+          ord: 4,
+          curriculum: true,
+          exampleHanzi: hanzi,
+        }),
+        word({
+          hanzi: "家",
+          gloss: "home",
+          pinyin: "jiā",
+          ord: 5,
+          curriculum: true,
+          exampleHanzi: hanzi,
+        }),
+      ],
+      [sentence(hanzi, "Wǒmen míngtiān yào qù tā jiā.")],
+    );
+    const pick = pickPractice(trip, [], [], now);
+    expect(pick).toEqual({ hanzi, purpose: "introduce", focus: "我们" });
+    expect(promptFromActive(trip, pick!).pieces).toEqual([
+      { kind: "word", hanzi: "我们", pinyin: "Wǒmen" },
+      { kind: "word", hanzi: "明天", pinyin: "míngtiān" },
+      { kind: "word", hanzi: "要", pinyin: "yào" },
+      { kind: "word", hanzi: "去", pinyin: "qù" },
+      { kind: "word", hanzi: "她", pinyin: "tā" },
+      { kind: "word", hanzi: "家", pinyin: "jiā" },
+      { kind: "gap", text: "。" },
+    ]);
+  });
+
+  it("leaves a sentence blank when its pinyin does not line up", () => {
+    const broken = indexCorpus(
+      [
+        word({
+          hanzi: "要",
+          gloss: "to demand",
+          pinyin: "yāo",
+          ord: 0,
+          curriculum: true,
+          exampleHanzi: "要去。",
+        }),
+        word({
+          hanzi: "去",
+          gloss: "go",
+          pinyin: "qù",
+          ord: 1,
+          curriculum: true,
+          exampleHanzi: "要去。",
+        }),
+      ],
+      [sentence("要去。", "yāo")],
+    );
+    expect(pickPractice(broken, [], [], now)).toEqual({
+      hanzi: "要",
+      purpose: "introduce",
+      focus: "要",
+    });
+    expect(
+      promptFromActive(broken, {
+        hanzi: "要去。",
+        purpose: "introduce",
+        focus: "要",
+      }).pieces,
+    ).toEqual([
+      { kind: "word", hanzi: "要", pinyin: "" },
+      { kind: "word", hanzi: "去", pinyin: "" },
+      { kind: "gap", text: "。" },
+    ]);
   });
 
   it("uses the word alone when no indexed sentence contains it", () => {
