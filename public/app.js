@@ -1045,7 +1045,9 @@ function renderHistory(stack) {
     const row = document.createElement("li");
     const chinese = addText(row, "p", "practice-history-zh", "");
     chinese.lang = "zh-Hans";
-    addText(chinese, "span", "practice-history-text", item.hanzi);
+    // Only finished sentences get the popup dictionary; the live one is the exercise.
+    const words = addText(chinese, "span", "practice-history-text", "");
+    appendSegmented(words, item.hanzi);
     const replay = document.createElement("button");
     replay.type = "button";
     replay.className = "practice-speak";
@@ -1094,6 +1096,7 @@ function renderPractice() {
     }
     prepareArrival(from);
     settlePractice(from);
+    syncLookup();
     return;
   }
   const words = wordPieces(prompt);
@@ -1205,6 +1208,7 @@ function renderPractice() {
   }
   prepareArrival(from);
   settlePractice(from);
+  syncLookup();
 }
 
 function acceptPrompt(prompt) {
@@ -1451,34 +1455,47 @@ function showLookup(button, pin) {
 function lookupButton(target) {
   if (!(target instanceof Element)) return null;
   const button = target.closest(".lookup");
-  if (!button || !messages.contains(button)) return null;
+  if (!button) return null;
+  if (!messages.contains(button) && !practiceStage.contains(button)) return null;
   return button;
 }
 
-messages.addEventListener("pointerover", (event) => {
-  const button = lookupButton(event.target);
-  if (!button || lookupPinned) return;
-  showLookup(button, false);
-});
+for (const host of [messages, practiceStage]) {
+  host.addEventListener("pointerover", (event) => {
+    const button = lookupButton(event.target);
+    if (!button || lookupPinned) return;
+    showLookup(button, false);
+  });
 
-messages.addEventListener("pointerout", (event) => {
-  if (lookupPinned) return;
-  const button = lookupButton(event.target);
-  if (!button) return;
-  const next = event.relatedTarget;
-  if (next instanceof Node && (button.contains(next) || popover.contains(next))) return;
-  hideLookup();
-});
-
-messages.addEventListener("click", (event) => {
-  const button = lookupButton(event.target);
-  if (!button) return;
-  event.preventDefault();
-  if (lookupPinned && lookupAnchor === button) {
+  host.addEventListener("pointerout", (event) => {
+    if (lookupPinned) return;
+    const button = lookupButton(event.target);
+    if (!button) return;
+    const next = event.relatedTarget;
+    if (next instanceof Node && (button.contains(next) || popover.contains(next)))
+      return;
     hideLookup();
-    return;
-  }
-  showLookup(button, true);
+  });
+
+  host.addEventListener("click", (event) => {
+    const button = lookupButton(event.target);
+    if (!button) return;
+    event.preventDefault();
+    if (lookupPinned && lookupAnchor === button) {
+      hideLookup();
+      return;
+    }
+    showLookup(button, true);
+  });
+
+  host.addEventListener("scroll", () => {
+    if (lookupAnchor) placeLookup();
+  });
+}
+
+// Looking a word up in a finished sentence must not pull focus off the pinyin input.
+practiceStage.addEventListener("mousedown", (event) => {
+  if (lookupButton(event.target)) event.preventDefault();
 });
 
 popover.addEventListener("pointerout", (event) => {
@@ -1499,10 +1516,6 @@ document.addEventListener("pointerdown", (event) => {
   if (!(target instanceof Node)) return;
   if (popover.contains(target) || lookupButton(target)) return;
   hideLookup();
-});
-
-messages.addEventListener("scroll", () => {
-  if (lookupAnchor) placeLookup();
 });
 
 window.addEventListener("resize", () => {

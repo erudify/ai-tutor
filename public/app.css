@@ -312,7 +312,8 @@ main {
   color: var(--cinnabar);
 }
 
-.message .body .lookup {
+.message .body .lookup,
+.practice-history-text .lookup {
   display: inline;
   margin: 0;
   padding: 0;
@@ -328,7 +329,9 @@ main {
 }
 
 .message .body .lookup:hover,
-.message .body .lookup:focus-visible {
+.message .body .lookup:focus-visible,
+.practice-history-text .lookup:hover,
+.practice-history-text .lookup:focus-visible {
   color: var(--cinnabar);
   background: var(--accent-wash);
   border-radius: 0.15rem;
