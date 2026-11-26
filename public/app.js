@@ -29,6 +29,8 @@ const practiceStage = document.querySelector("#practice-stage");
 const practiceStatus = document.querySelector("#practice-status");
 const tabChat = document.querySelector("#tab-chat");
 const tabPractice = document.querySelector("#tab-practice");
+const tabListening = document.querySelector("#tab-listening");
+const practiceHint = document.querySelector("#practice-hint");
 const showDebug = document.querySelector("#show-debug");
 const debugSection = document.querySelector("#debug");
 const scheduleSection = document.querySelector("#schedule");
@@ -40,24 +42,42 @@ const debugModel = document.querySelector("#debug-model");
 const PRACTICE_HISTORY_LIMIT = 10;
 const PRACTICE_SETTLE_MS = 320;
 
-const practice = {
-  prompt: null,
-  index: 0,
-  answers: [],
-  revealed: new Set(),
-  pending: false,
-  error: "",
-  loadedFor: "",
-  history: [],
-  /** Scheduler internals sent with each practice response. */
-  debug: null,
+const PRACTICE_HINTS = {
+  pinyin:
+    "Type the pinyin under the current word. A mismatch stays until it matches. Escape shows the answer, and showing it counts as a miss.",
+  listening:
+    "Listen, then type each word in characters. Enter plays the sentence again. Escape shows the word, and showing it counts as a miss.",
 };
+
+/** Pinyin and listening keep separate cards on the server and separate state here. */
+function newPractice(deck) {
+  return {
+    deck,
+    prompt: null,
+    index: 0,
+    answers: [],
+    revealed: new Set(),
+    pending: false,
+    error: "",
+    /** Why the sentence audio could not play, for listening. */
+    audioError: "",
+    loadedFor: "",
+    history: [],
+    /** Scheduler internals sent with each practice response. */
+    debug: null,
+    /** The last graded answer in this deck. */
+    lastTrace: null,
+    /** Bumped to ignore responses that arrive after the view moved on. */
+    epoch: 0,
+  };
+}
+
+const decks = { pinyin: newPractice("pinyin"), listening: newPractice("listening") };
+let practice = decks.pinyin;
 
 /** Glyph box of the sentence that just finished, used once for the settle animation. */
 let practiceArrival = null;
 let practiceGhost = null;
-
-let practiceEpoch = 0;
 
 /** Spoken audio for the current sentence, fetched while the student types. */
 const speech = { hanzi: "", audio: null };
@@ -75,13 +95,44 @@ function preloadSpeech(hanzi) {
   speech.audio = audio;
 }
 
+/** Resolves once playback starts. Rejects when the browser blocks it or the audio fails. */
 function playSpeech(hanzi) {
-  if (!hanzi) return;
-  const audio =
-    speech.hanzi === hanzi && speech.audio ? speech.audio : new Audio(speechUrl(hanzi));
+  if (!hanzi) return Promise.resolve();
+  if (speech.audio && !speech.audio.paused) speech.audio.pause();
+  const cached = speech.hanzi === hanzi && speech.audio && !speech.audio.error;
+  const audio = cached ? speech.audio : new Audio(speechUrl(hanzi));
+  if (!cached) {
+    speech.hanzi = hanzi;
+    speech.audio = audio;
+  }
   audio.currentTime = 0;
-  // Playback is a nicety: a blocked autoplay or a missing key must not break practice.
-  void audio.play().catch(() => {});
+  return audio.play();
+}
+
+/** Pinyin practice plays sentences as a nicety, so a failure there stays quiet. */
+function playQuietly(hanzi) {
+  void playSpeech(hanzi).catch(() => {});
+}
+
+/** Listening needs the audio, so say when it cannot play. */
+function playListening() {
+  const deck = decks.listening;
+  const hanzi = deck.prompt?.hanzi;
+  if (!hanzi) return;
+  playSpeech(hanzi).then(
+    () => {
+      if (!deck.audioError) return;
+      deck.audioError = "";
+      if (practice === deck) renderPracticeStatus();
+    },
+    (error) => {
+      // A blocked autoplay is normal before the first key press; the button is there.
+      if (error?.name === "NotAllowedError") return;
+      deck.audioError =
+        "The sentence audio could not be played. Speech needs OPENROUTER_API_KEY on the server.";
+      if (practice === deck) renderPracticeStatus();
+    },
+  );
 }
 
 const state = {
@@ -475,7 +526,14 @@ function renderDebugNow(debug, prompt) {
   clear(debugNow);
   const why = debug?.why;
   if (!prompt) {
-    addText(debugNow, "p", "muted", "No sentence. The curriculum may be finished.");
+    addText(
+      debugNow,
+      "p",
+      "muted",
+      practice.deck === "listening"
+        ? "No sentence. Nothing is due, and no word known from reading is waiting for its first listen."
+        : "No sentence. The curriculum may be finished.",
+    );
     return;
   }
   const head = document.createElement("p");
@@ -529,7 +587,7 @@ function renderDebugNow(debug, prompt) {
 
 function renderDebugLast(trace) {
   clear(debugLast);
-  if (!trace || trace.backend !== "practice" || !trace.events?.length) {
+  if (!trace || !trace.events?.length) {
     addText(debugLast, "p", "muted", "No practice answer yet.");
     return;
   }
@@ -574,7 +632,9 @@ function renderDebugQueue(debug) {
       debugQueue,
       "p",
       "muted",
-      "Nothing is due, so the next sentence introduces a new word.",
+      practice.deck === "listening"
+        ? "No listening card is due, so the next sentence is a first listen."
+        : "Nothing is due, so the next sentence introduces a new word.",
     );
   } else {
     addText(
@@ -622,7 +682,7 @@ function renderDebugModel(debug, prompt) {
     debugModel,
     "p",
     "muted",
-    `${rows.length} words with cards: ${tally.stable} stable, ${tally.known} known, ${tally.fragile} fragile. Stable means reviewed twice and recall still at least 90%.`,
+    `${rows.length} words with ${practice.deck === "listening" ? "listening " : ""}cards: ${tally.stable} stable, ${tally.known} known, ${tally.fragile} fragile. Stable means reviewed twice and recall still at least 90%.`,
   );
   const inSentence = new Set(
     (prompt?.pieces || [])
@@ -681,7 +741,7 @@ function renderDebug() {
   document.body.classList.toggle("debugging", visible);
   if (!visible) return;
   renderDebugNow(practice.debug, practice.prompt);
-  renderDebugLast(state.trace);
+  renderDebugLast(practice.lastTrace);
   renderDebugQueue(practice.debug);
   renderDebugModel(practice.debug, practice.prompt);
 }
@@ -892,10 +952,10 @@ function wordPieces(prompt) {
   return (prompt?.pieces || []).filter((piece) => piece.kind === "word");
 }
 
-function rememberExercise(prompt) {
-  practice.history.push({ hanzi: prompt.hanzi, english: prompt.english || "" });
-  if (practice.history.length > PRACTICE_HISTORY_LIMIT) {
-    practice.history.splice(0, practice.history.length - PRACTICE_HISTORY_LIMIT);
+function rememberExercise(deck, prompt) {
+  deck.history.push({ hanzi: prompt.hanzi, english: prompt.english || "" });
+  if (deck.history.length > PRACTICE_HISTORY_LIMIT) {
+    deck.history.splice(0, deck.history.length - PRACTICE_HISTORY_LIMIT);
   }
 }
 
@@ -1054,7 +1114,7 @@ function renderHistory(stack) {
     replay.textContent = "▶";
     replay.title = "Play pronunciation";
     replay.setAttribute("aria-label", `Play pronunciation of ${item.hanzi}`);
-    replay.addEventListener("click", () => playSpeech(item.hanzi));
+    replay.addEventListener("click", () => playQuietly(item.hanzi));
     chinese.append(replay);
     if (item.english) {
       const english = addText(row, "p", "practice-history-en", item.english);
@@ -1065,55 +1125,14 @@ function renderHistory(stack) {
   stack.append(list);
 }
 
-function renderPractice() {
-  const from = practiceArrival;
-  practiceArrival = null;
-  const keepPlace = !from && !currentInFrame();
-  const keptScroll = practiceStage.scrollTop;
-  clearFlight();
-  clear(practiceStage);
-  practiceStatus.className = practice.error ? "error" : "";
+function renderPracticeStatus() {
+  const message = practice.error || practice.audioError;
+  practiceStatus.className = message ? "error" : "";
   practiceStatus.textContent =
-    practice.error || (practice.pending ? "Saving this sentence…" : "");
-  const stack = document.createElement("div");
-  stack.className = "practice-stack";
-  renderHistory(stack);
-  const current = document.createElement("div");
-  current.className = "practice-current";
-  stack.append(current);
-  practiceStage.append(stack);
-  if (keepPlace) practiceStage.scrollTop = keptScroll;
-  else pinPractice();
-  const prompt = practice.prompt;
-  if (!prompt) {
-    if (practice.loadedFor) {
-      addText(
-        current,
-        "p",
-        "practice-empty",
-        "Nothing is due, and the curriculum on file is finished.",
-      );
-    }
-    prepareArrival(from);
-    settlePractice(from);
-    syncLookup();
-    return;
-  }
-  const words = wordPieces(prompt);
-  if (debugOn() && prompt.focus) {
-    const badge = document.createElement("p");
-    badge.className = `practice-purpose ${prompt.purpose}`;
-    const focusGloss = practice.debug?.knowledge
-      ?.find((row) => row.hanzi === prompt.focus)
-      ?.gloss?.split(/[;/]/u)[0]
-      .replace(/\s*\([^)]*\)/gu, "")
-      .trim();
-    badge.textContent =
-      prompt.purpose === "introduce"
-        ? `New word · ${prompt.focus}`
-        : `Review · ${prompt.focus}${focusGloss ? ` (${focusGloss})` : ""}`;
-    current.append(badge);
-  }
+    message || (practice.pending ? "Saving this sentence…" : "");
+}
+
+function renderPinyinSentence(current, prompt, words) {
   const sentence = document.createElement("div");
   sentence.className = "practice-sentence";
   sentence.lang = "zh-Hans";
@@ -1195,6 +1214,204 @@ function renderPractice() {
     wordIndex += 1;
   }
   current.append(sentence);
+}
+
+/** What an IME commits can carry spaces or punctuation; neither is graded. */
+function bareHanzi(value) {
+  return value.replace(/[\s\p{P}]/gu, "");
+}
+
+function lookupWord(hanzi) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "lookup";
+  button.textContent = hanzi;
+  button.dataset.hanzi = hanzi;
+  return button;
+}
+
+function focusPracticeInput() {
+  const input = practiceStage.querySelector("input");
+  if (input instanceof HTMLInputElement && !practicePanel.hidden && !practice.pending) {
+    input.focus({ preventScroll: true });
+  }
+}
+
+/**
+ * The sentence is heard, not shown: each word is a blank sized to its characters.
+ * Finished and revealed words are dictionary buttons, so hovering shows the pinyin.
+ */
+function renderListeningSentence(current, prompt, words) {
+  const play = document.createElement("button");
+  play.type = "button";
+  play.className = "listen-play";
+  play.textContent = "▶ Play sentence";
+  play.title = "Play the sentence (Enter)";
+  play.addEventListener("click", () => {
+    playListening();
+    focusPracticeInput();
+  });
+  current.append(play);
+  const sentence = document.createElement("div");
+  sentence.className = "practice-sentence listen-sentence";
+  sentence.lang = "zh-Hans";
+  let wordIndex = 0;
+  for (const piece of prompt.pieces) {
+    if (piece.kind === "gap") {
+      addText(sentence, "span", "practice-gap", piece.text);
+      continue;
+    }
+    const slotIndex = wordIndex;
+    wordIndex += 1;
+    const slot = document.createElement("div");
+    slot.className = "practice-slot listen-slot";
+    if (debugOn() && piece.hanzi === prompt.focus) slot.classList.add("practice-focus");
+    const revealed = practice.revealed.has(slotIndex);
+    const answer = document.createElement("div");
+    answer.className = "listen-answer";
+    if (revealed && slotIndex >= practice.index) answer.append(lookupWord(piece.hanzi));
+    slot.append(answer);
+    const field = document.createElement("div");
+    field.className = "listen-field";
+    if (slotIndex < practice.index) {
+      const done = document.createElement("span");
+      done.className = revealed
+        ? "practice-hanzi listen-done shown"
+        : "practice-hanzi listen-done";
+      done.append(lookupWord(piece.hanzi));
+      field.append(done);
+      slot.append(field);
+      sentence.append(slot);
+      continue;
+    }
+    const sizer = addText(field, "span", "practice-hanzi listen-sizer", piece.hanzi);
+    sizer.setAttribute("aria-hidden", "true");
+    if (slotIndex > practice.index) {
+      field.classList.add("listen-blank");
+      slot.append(field);
+      sentence.append(slot);
+      continue;
+    }
+    const input = document.createElement("input");
+    input.type = "text";
+    input.lang = "zh-Hans";
+    input.spellcheck = false;
+    input.autocomplete = "off";
+    input.setAttribute("autocapitalize", "off");
+    input.setAttribute("autocorrect", "off");
+    input.setAttribute(
+      "aria-label",
+      `Characters for word ${slotIndex + 1} of ${words.length}`,
+    );
+    input.disabled = practice.pending;
+    // A phrase committed in one go fills this word and runs on into the next ones.
+    const consider = () => {
+      if (!input.isConnected || practice.pending) return;
+      let rest = bareHanzi(input.value);
+      let at = slotIndex;
+      while (at < words.length && rest.startsWith(words[at].hanzi)) {
+        practice.answers[at] = words[at].hanzi;
+        rest = rest.slice(words[at].hanzi.length);
+        at += 1;
+      }
+      if (at === slotIndex) return;
+      practice.index = at;
+      if (at >= words.length) {
+        void submitPractice();
+        return;
+      }
+      renderPractice();
+      const next = practiceStage.querySelector("input");
+      if (rest && next instanceof HTMLInputElement) {
+        next.value = rest;
+        next.setSelectionRange(rest.length, rest.length);
+      }
+    };
+    input.addEventListener("keydown", (event) => {
+      if (event.isComposing || event.key === "Process") return;
+      if (event.key === "Enter") {
+        event.preventDefault();
+        playListening();
+        return;
+      }
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      hideLookup();
+      if (practice.revealed.has(slotIndex) || practice.pending) return;
+      const draft = input.value;
+      practice.revealed.add(slotIndex);
+      renderPractice();
+      const next = practiceStage.querySelector("input");
+      if (next instanceof HTMLInputElement) {
+        next.value = draft;
+        next.setSelectionRange(draft.length, draft.length);
+        next.focus();
+      }
+    });
+    input.addEventListener("input", (event) => {
+      if (event.isComposing) return;
+      consider();
+    });
+    input.addEventListener("compositionend", () => queueMicrotask(consider));
+    field.append(input);
+    slot.append(field);
+    sentence.append(slot);
+  }
+  current.append(sentence);
+}
+
+function renderPractice() {
+  const from = practiceArrival;
+  practiceArrival = null;
+  const keepPlace = !from && !currentInFrame();
+  const keptScroll = practiceStage.scrollTop;
+  clearFlight();
+  clear(practiceStage);
+  renderPracticeStatus();
+  const stack = document.createElement("div");
+  stack.className = "practice-stack";
+  renderHistory(stack);
+  const current = document.createElement("div");
+  current.className = "practice-current";
+  stack.append(current);
+  practiceStage.append(stack);
+  if (keepPlace) practiceStage.scrollTop = keptScroll;
+  else pinPractice();
+  const prompt = practice.prompt;
+  if (!prompt) {
+    if (practice.loadedFor) {
+      addText(
+        current,
+        "p",
+        "practice-empty",
+        practice.deck === "listening"
+          ? "Nothing to listen to yet. A word joins listening once it is known from pinyin practice or the conversation."
+          : "Nothing is due, and the curriculum on file is finished.",
+      );
+    }
+    prepareArrival(from);
+    settlePractice(from);
+    syncLookup();
+    return;
+  }
+  const words = wordPieces(prompt);
+  if (debugOn() && prompt.focus) {
+    const badge = document.createElement("p");
+    badge.className = `practice-purpose ${prompt.purpose}`;
+    const focusGloss = practice.debug?.knowledge
+      ?.find((row) => row.hanzi === prompt.focus)
+      ?.gloss?.split(/[;/]/u)[0]
+      .replace(/\s*\([^)]*\)/gu, "")
+      .trim();
+    badge.textContent =
+      prompt.purpose === "introduce"
+        ? `${practice.deck === "listening" ? "First listen" : "New word"} · ${prompt.focus}`
+        : `Review · ${prompt.focus}${focusGloss ? ` (${focusGloss})` : ""}`;
+    current.append(badge);
+  }
+  if (practice.deck === "listening") renderListeningSentence(current, prompt, words);
+  else renderPinyinSentence(current, prompt, words);
   if (practice.error && practice.index >= words.length && !practice.pending) {
     const retry = document.createElement("button");
     retry.type = "button";
@@ -1211,55 +1428,75 @@ function renderPractice() {
   syncLookup();
 }
 
-function acceptPrompt(prompt) {
-  practice.prompt = prompt;
-  practice.index = 0;
-  practice.answers = [];
-  practice.revealed = new Set();
-  practice.pending = false;
-  practice.error = "";
-  practice.loadedFor = learnerId();
+function acceptPrompt(deck, prompt) {
+  deck.prompt = prompt;
+  deck.index = 0;
+  deck.answers = [];
+  deck.revealed = new Set();
+  deck.pending = false;
+  deck.error = "";
+  deck.audioError = "";
+  deck.loadedFor = learnerId();
+  if (practice !== deck) return;
   preloadSpeech(prompt?.hanzi);
   renderPractice();
+  if (deck.deck === "listening" && !practicePanel.hidden) playListening();
 }
 
-async function loadPractice() {
-  const epoch = ++practiceEpoch;
+function deckLabel(deck) {
+  return deck.deck === "listening" ? "listening practice" : "pinyin practice";
+}
+
+/** Responses for a deck land in that deck, and only paint when it is on screen. */
+function paintDeck(deck) {
+  if (practice === deck) renderPractice();
+}
+
+async function loadPractice(deck = practice) {
+  const epoch = ++deck.epoch;
   const learner = learnerId();
-  practice.pending = false;
-  practice.error = "";
-  practice.prompt = null;
-  practice.loadedFor = "";
-  renderPractice();
-  practiceStatus.className = "";
-  practiceStatus.textContent = "Loading a sentence…";
+  deck.pending = false;
+  deck.error = "";
+  deck.prompt = null;
+  deck.loadedFor = "";
+  paintDeck(deck);
+  if (practice === deck) {
+    practiceStatus.className = "";
+    practiceStatus.textContent = "Loading a sentence…";
+  }
   try {
     const response = await fetch(
-      `/api/practice?learner=${encodeURIComponent(learner)}`,
+      `/api/practice?learner=${encodeURIComponent(learner)}&deck=${deck.deck}`,
     );
     const body = await response.json();
-    if (epoch !== practiceEpoch) return;
-    if (!response.ok) throw new Error(body.error || "Could not load pinyin practice.");
+    if (epoch !== deck.epoch) return;
+    if (!response.ok)
+      throw new Error(body.error || `Could not load ${deckLabel(deck)}.`);
     if (body.preview) state.preview = body.preview;
-    if (body.trace) state.trace = body.trace;
-    practice.debug = body.debug || null;
-    acceptPrompt(body.prompt);
+    if (deck.deck === "pinyin" && body.trace) state.trace = body.trace;
+    // The pinyin deck shares the chat's last trace; only a practice answer counts here.
+    const graded =
+      body.trace?.backend === "practice" || body.trace?.backend === "listening";
+    deck.lastTrace = graded ? body.trace : null;
+    deck.debug = body.debug || null;
+    acceptPrompt(deck, body.prompt);
     render();
   } catch (error) {
-    if (epoch !== practiceEpoch) return;
-    practice.error =
-      error instanceof Error ? error.message : "Could not load pinyin practice.";
-    practice.loadedFor = "";
-    renderPractice();
+    if (epoch !== deck.epoch) return;
+    deck.error =
+      error instanceof Error ? error.message : `Could not load ${deckLabel(deck)}.`;
+    deck.loadedFor = "";
+    paintDeck(deck);
   }
 }
 
 async function submitPractice() {
-  const prompt = practice.prompt;
-  if (!prompt || practice.pending) return;
-  const epoch = ++practiceEpoch;
-  practice.pending = true;
-  practice.error = "";
+  const deck = practice;
+  const prompt = deck.prompt;
+  if (!prompt || deck.pending) return;
+  const epoch = ++deck.epoch;
+  deck.pending = true;
+  deck.error = "";
   renderPractice();
   try {
     const response = await fetch("/api/practice", {
@@ -1267,80 +1504,106 @@ async function submitPractice() {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         learner: learnerId(),
+        deck: deck.deck,
         hanzi: prompt.hanzi,
-        revealed: [...practice.revealed],
+        revealed: [...deck.revealed],
       }),
     });
     const body = await response.json();
-    if (epoch !== practiceEpoch) return;
+    if (epoch !== deck.epoch) return;
     if (response.status === 409) {
-      await loadPractice();
+      await loadPractice(deck);
       return;
     }
     if (!response.ok) throw new Error(body.error || "Could not save this sentence.");
-    const finished = practiceStage.querySelector(".practice-sentence");
-    rememberExercise(prompt);
-    playSpeech(prompt.hanzi);
+    const shown = practice === deck;
+    const finished = shown ? practiceStage.querySelector(".practice-sentence") : null;
+    rememberExercise(deck, prompt);
+    // Listening plays the next sentence instead; pinyin hears the one just read.
+    if (shown && deck.deck === "pinyin") playQuietly(prompt.hanzi);
     practiceArrival = finished ? measureGlyphs(finished) : null;
     state.preview = body.preview;
-    state.trace = body.trace;
+    if (deck.deck === "pinyin") state.trace = body.trace;
+    deck.lastTrace = body.trace;
     state.error = "";
-    practice.debug = body.debug || null;
-    acceptPrompt(body.prompt);
+    deck.debug = body.debug || null;
+    acceptPrompt(deck, body.prompt);
     render();
   } catch (error) {
-    if (epoch !== practiceEpoch) return;
-    practice.pending = false;
-    practice.error =
+    if (epoch !== deck.epoch) return;
+    deck.pending = false;
+    deck.error =
       error instanceof Error ? error.message : "Could not save this sentence.";
-    renderPractice();
+    paintDeck(deck);
   }
 }
 
 function forgetPractice() {
-  practiceEpoch += 1;
-  practice.prompt = null;
-  practice.index = 0;
-  practice.answers = [];
-  practice.revealed = new Set();
-  practice.pending = false;
-  practice.error = "";
-  practice.loadedFor = "";
-  practice.history = [];
-  practice.debug = null;
+  for (const deck of Object.values(decks)) {
+    deck.epoch += 1;
+    Object.assign(deck, newPractice(deck.deck), { epoch: deck.epoch });
+  }
+  practice = decks[practice.deck];
   practiceArrival = null;
   if (practicePanel.hidden) renderPractice();
   else void loadPractice();
 }
 
+const TABS = [
+  { mode: "chat", tab: tabChat },
+  { mode: "pinyin", tab: tabPractice },
+  { mode: "listening", tab: tabListening },
+];
+
 function selectTab(mode) {
-  const practiceOn = mode === "practice";
+  const practiceOn = mode !== "chat";
   chatPanel.hidden = practiceOn;
   practicePanel.hidden = !practiceOn;
-  tabChat.setAttribute("aria-selected", practiceOn ? "false" : "true");
-  tabPractice.setAttribute("aria-selected", practiceOn ? "true" : "false");
-  tabChat.tabIndex = practiceOn ? -1 : 0;
-  tabPractice.tabIndex = practiceOn ? 0 : -1;
+  for (const entry of TABS) {
+    const on = entry.mode === mode;
+    entry.tab.setAttribute("aria-selected", on ? "true" : "false");
+    entry.tab.tabIndex = on ? 0 : -1;
+  }
+  if (practiceOn) {
+    const changed = practice.deck !== mode;
+    practice = decks[mode];
+    practicePanel.setAttribute(
+      "aria-labelledby",
+      TABS.find((e) => e.mode === mode).tab.id,
+    );
+    practiceHint.textContent = PRACTICE_HINTS[mode];
+    if (changed) {
+      clearFlight();
+      practiceArrival = null;
+      hideLookup();
+    }
+  }
   renderDebug();
   if (!practiceOn) return;
-  if (practice.loadedFor !== learnerId()) void loadPractice();
-  else renderPractice();
+  if (practice.loadedFor !== learnerId()) {
+    void loadPractice();
+    return;
+  }
+  preloadSpeech(practice.prompt?.hanzi);
+  renderPractice();
+  if (mode === "listening") playListening();
 }
 
-tabChat.addEventListener("click", () => selectTab("chat"));
-tabPractice.addEventListener("click", () => selectTab("practice"));
-for (const tab of [tabChat, tabPractice]) {
-  tab.addEventListener("keydown", (event) => {
+for (const [index, entry] of TABS.entries()) {
+  entry.tab.addEventListener("click", () => selectTab(entry.mode));
+  entry.tab.addEventListener("keydown", (event) => {
     if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return;
     event.preventDefault();
-    const toPractice = tabPractice.getAttribute("aria-selected") !== "true";
-    selectTab(toPractice ? "practice" : "chat");
-    (toPractice ? tabPractice : tabChat).focus();
+    const step = event.key === "ArrowRight" ? 1 : TABS.length - 1;
+    const next = TABS[(index + step) % TABS.length];
+    selectTab(next.mode);
+    next.tab.focus();
   });
 }
 
 document.querySelector("#reset").addEventListener("click", async () => {
-  if (!confirm("Clear this learner's messages, schedule, and pinyin progress?")) return;
+  if (!confirm("Clear this learner's messages, schedule, and practice progress?"))
+    return;
   invalidateView();
   state.pending = true;
   render();

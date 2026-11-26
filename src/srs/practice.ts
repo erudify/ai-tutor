@@ -11,6 +11,27 @@ import {
 
 export type PracticePurpose = "review" | "introduce";
 
+/**
+ * Pinyin: read the characters, type the reading.
+ * Listening: hear the sentence, type the characters. Its cards are separate.
+ */
+export type PracticeDeck = "pinyin" | "listening";
+
+export const PRACTICE_DECKS: readonly PracticeDeck[] = ["pinyin", "listening"];
+
+export function isPracticeDeck(value: unknown): value is PracticeDeck {
+  return value === "pinyin" || value === "listening";
+}
+
+export type PlanOptions = {
+  deck?: PracticeDeck;
+  /**
+   * Reading cards, for the listening deck. A word gets its first listening
+   * exercise only after it counts as known from reading.
+   */
+  reading?: readonly Card[];
+};
+
 export type PracticeActive = {
   hanzi: string;
   purpose: PracticePurpose;
@@ -222,20 +243,32 @@ function percent(value: number): string {
 }
 
 /**
- * The next pinyin prompt and the reasons for it.
+ * The next prompt and the reasons for it.
  * Nothing due: the introducing sentence of the next curriculum word with no card.
  * Something due: one sentence for the most urgent word. That sentence stays
  * inside words that already have cards when any indexed sentence can.
  * Among those, prefer companions the student knows well, then a sentence they
  * have not seen, then the one shown furthest in the past.
- * A sentence is eligible only when its file pinyin lines up with its characters.
+ * A pinyin sentence is eligible only when its file pinyin lines up with its characters.
+ *
+ * Listening plans the same way over its own cards, with three differences:
+ * it always needs a sentence to speak, so a word with none is skipped; a new
+ * word must already count as known from reading; and a review that cannot stay
+ * inside listening cards prefers sentences whose words all have reading cards.
  */
 export function planPractice(
   corpus: Corpus,
   cards: readonly Card[],
   seen: readonly SeenSentence[],
   now: number,
+  options: PlanOptions = {},
 ): PracticePlan | null {
+  const listening = options.deck === "listening";
+  const eligible = listening ? () => true : sentenceAligns;
+  const readingHeld = new Set((options.reading ?? []).map((card) => card.hanzi));
+  const readingKnown = new Set(
+    (options.reading ?? []).filter(countsAsKnown).map((card) => card.hanzi),
+  );
   const seenAt = new Map(seen.map((row) => [row.hanzi, row.shownAt]));
   const stable = stableHanzi(cards, now);
   const known = new Set<string>();
@@ -254,13 +287,15 @@ export function planPractice(
     const reasons: string[] = [
       `Review. ${due.length} word${due.length === 1 ? " is" : "s are"} due. ${word.hanzi} (${shortGloss(word.gloss)}) is the most urgent: recall chance ${percent(retrievability(card, now))}, due ${ago(now, card.due)}, ${STATE_NAME_OF[card.state]}.`,
     ];
-    const options = (corpus.examplesByToken.get(word.hanzi) ?? []).filter(
-      sentenceAligns,
-    );
+    const options = (corpus.examplesByToken.get(word.hanzi) ?? []).filter(eligible);
+    if (listening && options.length === 0) continue;
     const familiar = options.filter(
       (example) => !introducesNewWord(example.tokens, held),
     );
-    const pool = familiar.length > 0 ? familiar : options;
+    const read = listening
+      ? options.filter((example) => !introducesNewWord(example.tokens, readingHeld))
+      : [];
+    const pool = familiar.length > 0 ? familiar : read.length > 0 ? read : options;
     const chosen = bestSentence(pool, word.hanzi, stable, known, seenAt);
     if (options.length === 0) {
       reasons.push(
@@ -269,6 +304,10 @@ export function planPractice(
     } else if (familiar.length > 0) {
       reasons.push(
         `${options.length} sentence${options.length === 1 ? "" : "s"} contain ${word.hanzi}; ${familiar.length} use only words that already have cards, so only those were considered.`,
+      );
+    } else if (read.length > 0) {
+      reasons.push(
+        `${options.length} sentence${options.length === 1 ? "" : "s"} contain ${word.hanzi}; each adds a word with no listening card, so the ${read.length} whose words all have reading cards were considered.`,
       );
     } else {
       reasons.push(
@@ -318,6 +357,12 @@ export function planPractice(
     };
   }
 
+  if (listening) {
+    return planFirstListen(corpus, cards, held, readingKnown, stable, known, seenAt, {
+      now,
+      dueQueue,
+    });
+  }
   const next = corpus.curriculum.find((word) => !held.has(word.hanzi));
   if (!next) return null;
   const reasons: string[] = [];
@@ -360,13 +405,84 @@ export function planPractice(
   };
 }
 
+/**
+ * The next curriculum word that is known from reading and has no listening card,
+ * heard in its own introducing sentence (or, failing that, any sentence with it).
+ */
+function planFirstListen(
+  corpus: Corpus,
+  cards: readonly Card[],
+  held: ReadonlySet<string>,
+  readingKnown: ReadonlySet<string>,
+  stable: ReadonlySet<string>,
+  known: ReadonlySet<string>,
+  seenAt: ReadonlyMap<string, number>,
+  at: { now: number; dueQueue: PracticeWhy["dueQueue"] },
+): PracticePlan | null {
+  const { now, dueQueue } = at;
+  for (const next of corpus.curriculum) {
+    if (held.has(next.hanzi) || !readingKnown.has(next.hanzi)) continue;
+    const own = findExample(corpus, next.exampleHanzi.trim());
+    const example =
+      own && own.tokens.includes(next.hanzi)
+        ? own
+        : bestSentence(
+            corpus.examplesByToken.get(next.hanzi) ?? [],
+            next.hanzi,
+            stable,
+            known,
+            seenAt,
+          );
+    if (!example) continue;
+    const reasons: string[] = [];
+    const upcoming = cards
+      .filter((card) => card.state !== State.New && card.due > now)
+      .sort((a, b) => a.due - b.due)[0];
+    reasons.push(
+      upcoming
+        ? `First listen. No listening card is due; the next is ${upcoming.hanzi} in ${until(now, upcoming.due)}.`
+        : "First listen. No word has a listening card yet.",
+    );
+    const rank = corpus.curriculum.indexOf(next) + 1;
+    reasons.push(
+      `${next.hanzi} (${shortGloss(next.gloss)}) is the most frequent curriculum word that is known from reading and has no listening card (#${rank} of ${corpus.curriculum.length}).`,
+    );
+    reasons.push(
+      example === own
+        ? "Heard in its own introducing sentence."
+        : "Its introducing sentence could not be found, so another sentence with it was picked.",
+    );
+    return {
+      active: { hanzi: example.hanzi, purpose: "introduce", focus: next.hanzi },
+      why: {
+        decidedAt: now,
+        purpose: "introduce",
+        focus: next.hanzi,
+        reasons,
+        dueQueue,
+        candidates: rankCandidates(
+          [example],
+          next.hanzi,
+          stable,
+          known,
+          held,
+          seenAt,
+          example,
+        ),
+      },
+    };
+  }
+  return null;
+}
+
 export function pickPractice(
   corpus: Corpus,
   cards: readonly Card[],
   seen: readonly SeenSentence[],
   now: number,
+  options: PlanOptions = {},
 ): PracticeActive | null {
-  return planPractice(corpus, cards, seen, now)?.active ?? null;
+  return planPractice(corpus, cards, seen, now, options)?.active ?? null;
 }
 
 const STATE_NAME_OF = ["new", "learning", "in review", "relearning"] as const;

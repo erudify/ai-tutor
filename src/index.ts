@@ -10,9 +10,11 @@ import { speak, SpeechError } from "./speech";
 import {
   findExample,
   gradePractice,
+  isPracticeDeck,
   knowledgeModel,
   planPractice,
   promptFromActive,
+  type PracticeDeck,
   type PracticePrompt,
   type PracticeWhy,
 } from "./srs/practice";
@@ -98,17 +100,28 @@ function revealedIndexes(value: unknown): number[] {
   return indexes;
 }
 
+function deckOf(body: unknown, url: URL): PracticeDeck {
+  const value = field(body, "deck") ?? url.searchParams.get("deck") ?? "pinyin";
+  if (!isPracticeDeck(value)) throw new HttpError(400, "Unknown practice deck.");
+  return value;
+}
+
 function practiceResponse(input: {
+  deck: PracticeDeck;
   prompt: PracticePrompt | null;
   why: PracticeWhy | null;
   corpus: Corpus;
+  /** Cards of this deck. */
   cards: readonly Card[];
+  /** Reading cards, for the schedule beside the exercise. */
+  readingCards: readonly Card[];
   trace: Trace | null;
   now: number;
 }) {
   return {
+    deck: input.deck,
     prompt: input.prompt,
-    preview: preview(input.corpus, input.cards, input.now),
+    preview: preview(input.corpus, input.readingCards, input.now),
     trace: input.trace,
     debug: {
       now: input.now,
@@ -313,26 +326,37 @@ export default {
       }
       if (request.method === "GET" && url.pathname === "/api/practice") {
         const id = learnerId(null, url);
+        const deck = deckOf(null, url);
         const now = Date.now();
         const corpus = await getCorpus(env.CORPUS);
         const stub = learnerStub(env, id);
-        const view = await stub.practiceView();
+        const view = await stub.practiceView(deck);
         let active = view.active;
         let why = view.why;
         if (!active) {
-          const plan = planPractice(corpus, view.cards, view.seen, now);
+          const plan = planPractice(corpus, view.cards, view.seen, now, {
+            deck,
+            reading: view.readingCards,
+          });
           if (plan) {
-            const kept = await stub.remember({ ...plan.active, why: plan.why, now });
+            const kept = await stub.remember({
+              ...plan.active,
+              deck,
+              why: plan.why,
+              now,
+            });
             active = kept.active;
             why = kept.why;
           }
         }
         return Response.json(
           practiceResponse({
+            deck,
             prompt: active ? promptFromActive(corpus, active) : null,
             why,
             corpus,
             cards: view.cards,
+            readingCards: view.readingCards,
             trace: view.trace,
             now,
           }),
@@ -341,6 +365,7 @@ export default {
       if (request.method === "POST" && url.pathname === "/api/practice") {
         const body = await readJson(request);
         const id = learnerId(body, url);
+        const deck = deckOf(body, url);
         const hanzi = field(body, "hanzi");
         if (typeof hanzi !== "string" || hanzi.length === 0 || hanzi.length > 200) {
           throw new HttpError(400, "That practice sentence is missing.");
@@ -349,25 +374,34 @@ export default {
         const now = Date.now();
         const corpus = await getCorpus(env.CORPUS);
         const stub = learnerStub(env, id);
-        const view = await stub.practiceView();
+        const view = await stub.practiceView(deck);
         if (!view.active || view.active.hanzi !== hanzi) {
           throw new HttpError(409, "That sentence is no longer the current exercise.");
         }
         const events = gradePractice(promptFromActive(corpus, view.active), revealed);
+        // A listening card is only made for a word the student has met in reading.
+        const reading = new Set(view.readingCards.map((card) => card.hanzi));
         const allowed = new Set<string>();
         for (const event of events) {
-          if (corpus.byHanzi.get(event.hanzi)?.tracked) allowed.add(event.hanzi);
+          if (!corpus.byHanzi.get(event.hanzi)?.tracked) continue;
+          if (deck === "listening" && !reading.has(event.hanzi)) continue;
+          allowed.add(event.hanzi);
         }
         const graded = applyEvidence(view.cards, events, allowed, now);
-        const suggestions = suggest(corpus, graded.cards, now);
+        const readingCards = deck === "pinyin" ? graded.cards : view.readingCards;
+        const suggestions = suggest(corpus, readingCards, now);
         const trace: Trace = {
-          backend: "practice",
+          backend: deck === "pinyin" ? "practice" : deck,
           events: graded.applied,
-          suggestions,
-          brief: renderBrief(frontier(corpus, graded.cards, now, []), suggestions),
+          suggestions: deck === "pinyin" ? suggestions : [],
+          brief:
+            deck === "pinyin"
+              ? renderBrief(frontier(corpus, graded.cards, now, []), suggestions)
+              : "",
           mentions: [],
         };
         const saved = await stub.finishPractice({
+          deck,
           now,
           hanzi,
           revision: view.revision,
@@ -382,25 +416,31 @@ export default {
               : "That sentence is no longer the current exercise.",
           );
         }
-        const plan = planPractice(corpus, graded.cards, view.seen, now);
+        const plan = planPractice(corpus, graded.cards, view.seen, now, {
+          deck,
+          reading: readingCards,
+        });
         const kept = plan
-          ? await stub.remember({ ...plan.active, why: plan.why, now })
+          ? await stub.remember({ ...plan.active, deck, why: plan.why, now })
           : null;
         const active = kept?.active ?? null;
         console.log(
           JSON.stringify({
             message: "practice complete",
             learner: id,
+            deck,
             events: trace.events.length,
             revealed: revealed.length,
           }),
         );
         return Response.json(
           practiceResponse({
+            deck,
             prompt: active ? promptFromActive(corpus, active) : null,
             why: kept?.why ?? null,
             corpus,
             cards: graded.cards,
+            readingCards,
             trace,
             now,
           }),

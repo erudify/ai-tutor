@@ -1,6 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { State, type Card, type StateValue } from "./srs/fsrs";
-import type { PracticePurpose, PracticeWhy } from "./srs/practice";
+import type { PracticeDeck, PracticePurpose, PracticeWhy } from "./srs/practice";
 import type { AppliedReview } from "./srs/schedule";
 import type { Trace } from "./turn";
 
@@ -48,8 +48,31 @@ export type PracticeActive = {
   focus: string | null;
 };
 
+/** Where each deck keeps its cards, its seen sentences and its active exercise. */
+const DECK_STORE: Record<
+  PracticeDeck,
+  { cards: string; seen: string; meta: string; source: string }
+> = {
+  pinyin: {
+    cards: "cards",
+    seen: "seen_sentences",
+    meta: "practice",
+    source: "practice",
+  },
+  listening: {
+    cards: "listening_cards",
+    seen: "listening_seen",
+    meta: "listening",
+    source: "listening",
+  },
+};
+
 export type PracticeView = {
+  deck: PracticeDeck;
+  /** Cards of this deck. */
   cards: Card[];
+  /** Reading cards: the chat and pinyin schedule. Same as cards for pinyin. */
+  readingCards: Card[];
   seen: { hanzi: string; shownAt: number }[];
   active: PracticeActive | null;
   /** Why the active sentence was picked. Null for a sentence picked before this was kept. */
@@ -59,6 +82,7 @@ export type PracticeView = {
 };
 
 export type RememberInput = {
+  deck: PracticeDeck;
   hanzi: string;
   purpose: PracticePurpose;
   focus: string | null;
@@ -67,6 +91,7 @@ export type RememberInput = {
 };
 
 export type FinishPracticeInput = {
+  deck: PracticeDeck;
   now: number;
   hanzi: string;
   revision: number;
@@ -194,14 +219,17 @@ export class Learner extends DurableObject<Env> {
     return { ok: true };
   }
 
-  practiceView(): PracticeView {
+  practiceView(deck: PracticeDeck = "pinyin"): PracticeView {
+    const reading = this.cards();
     return {
-      cards: this.cards(),
-      seen: this.seenSentences(),
-      active: this.activePractice(),
-      why: this.practiceWhy(),
+      deck,
+      cards: deck === "pinyin" ? reading : this.cards(DECK_STORE[deck].cards),
+      readingCards: reading,
+      seen: this.seenSentences(deck),
+      active: this.activePractice(deck),
+      why: this.practiceWhy(deck),
       revision: this.revision(),
-      trace: this.lastTrace(),
+      trace: deck === "pinyin" ? this.lastTrace() : this.deckTrace(deck),
     };
   }
 
@@ -214,8 +242,10 @@ export class Learner extends DurableObject<Env> {
     active: PracticeActive;
     why: PracticeWhy | null;
   } {
-    const existing = this.activePractice();
-    if (existing) return { ok: true, active: existing, why: this.practiceWhy() };
+    const store = DECK_STORE[input.deck];
+    const existing = this.activePractice(input.deck);
+    if (existing)
+      return { ok: true, active: existing, why: this.practiceWhy(input.deck) };
     const active: PracticeActive = {
       hanzi: input.hanzi,
       purpose: input.purpose === "introduce" ? "introduce" : "review",
@@ -223,15 +253,15 @@ export class Learner extends DurableObject<Env> {
     };
     this.ctx.storage.transactionSync(() => {
       this.sql.exec(
-        `INSERT INTO seen_sentences (hanzi, shown_at) VALUES (?, ?)
+        `INSERT INTO ${store.seen} (hanzi, shown_at) VALUES (?, ?)
          ON CONFLICT(hanzi) DO UPDATE SET shown_at = excluded.shown_at`,
         active.hanzi,
         input.now,
       );
-      this.setMeta("practice", active.hanzi);
-      this.setMeta("practice_purpose", active.purpose);
-      this.setMeta("practice_focus", active.focus ?? "");
-      this.setMeta("practice_why", JSON.stringify(input.why));
+      this.setMeta(store.meta, active.hanzi);
+      this.setMeta(`${store.meta}_purpose`, active.purpose);
+      this.setMeta(`${store.meta}_focus`, active.focus ?? "");
+      this.setMeta(`${store.meta}_why`, JSON.stringify(input.why));
     });
     return { ok: true, active, why: input.why };
   }
@@ -239,6 +269,7 @@ export class Learner extends DurableObject<Env> {
   finishPractice(
     input: FinishPracticeInput,
   ): { ok: true } | { ok: false; error: "busy" | "stale" } {
+    const store = DECK_STORE[input.deck];
     let result: { ok: true } | { ok: false; error: "busy" | "stale" } = {
       ok: false,
       error: "stale",
@@ -248,28 +279,33 @@ export class Learner extends DurableObject<Env> {
         result = { ok: false, error: "busy" };
         return;
       }
-      if (this.meta("practice") !== input.hanzi || this.revision() !== input.revision) {
+      if (this.meta(store.meta) !== input.hanzi || this.revision() !== input.revision) {
         result = { ok: false, error: "stale" };
         return;
       }
-      for (const card of input.cards) this.writeCard(card);
+      for (const card of input.cards) this.writeCard(card, store.cards);
       this.logReviews(
         input.trace.events,
         input.now,
-        "practice",
+        store.source,
         input.hanzi,
-        this.meta("practice_focus") || null,
+        this.meta(`${store.meta}_focus`) || null,
       );
+      if (input.deck === "pinyin") {
+        this.sql.exec(
+          "INSERT INTO traces (at, payload) VALUES (?, ?)",
+          input.now,
+          JSON.stringify(input.trace),
+        );
+        this.sql.exec(
+          "DELETE FROM traces WHERE id NOT IN (SELECT id FROM traces ORDER BY id DESC LIMIT 20)",
+        );
+      } else {
+        // The chat's "last turn" stays about reading; this deck keeps its own.
+        this.setMeta(`${store.meta}_trace`, JSON.stringify(input.trace));
+      }
       this.sql.exec(
-        "INSERT INTO traces (at, payload) VALUES (?, ?)",
-        input.now,
-        JSON.stringify(input.trace),
-      );
-      this.sql.exec(
-        "DELETE FROM traces WHERE id NOT IN (SELECT id FROM traces ORDER BY id DESC LIMIT 20)",
-      );
-      this.sql.exec(
-        "DELETE FROM meta WHERE key IN ('practice', 'practice_purpose', 'practice_focus')",
+        `DELETE FROM meta WHERE key IN ('${store.meta}', '${store.meta}_purpose', '${store.meta}_focus')`,
       );
       this.bumpRevision();
       result = { ok: true };
@@ -284,6 +320,8 @@ export class Learner extends DurableObject<Env> {
       this.sql.exec("DELETE FROM messages");
       this.sql.exec("DELETE FROM traces");
       this.sql.exec("DELETE FROM seen_sentences");
+      this.sql.exec("DELETE FROM listening_cards");
+      this.sql.exec("DELETE FROM listening_seen");
       this.sql.exec("DELETE FROM meta");
     });
     return { ok: true };
@@ -308,6 +346,19 @@ export class Learner extends DurableObject<Env> {
       learning_step INTEGER NOT NULL
     )`);
     this.sql.exec("CREATE INDEX IF NOT EXISTS cards_due ON cards (due)");
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS listening_cards (
+      hanzi TEXT PRIMARY KEY,
+      state INTEGER NOT NULL,
+      stability REAL NOT NULL,
+      difficulty REAL NOT NULL,
+      due INTEGER NOT NULL,
+      last_review INTEGER,
+      reps INTEGER NOT NULL,
+      lapses INTEGER NOT NULL,
+      elapsed_days INTEGER NOT NULL,
+      scheduled_days INTEGER NOT NULL,
+      learning_step INTEGER NOT NULL
+    )`);
     this.sql.exec(`CREATE TABLE IF NOT EXISTS reviews (
       id TEXT PRIMARY KEY,
       hanzi TEXT NOT NULL,
@@ -334,10 +385,12 @@ export class Learner extends DurableObject<Env> {
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
     )`);
-    this.sql.exec(`CREATE TABLE IF NOT EXISTS seen_sentences (
-      hanzi TEXT PRIMARY KEY,
-      shown_at INTEGER NOT NULL
-    )`);
+    for (const table of ["seen_sentences", "listening_seen"]) {
+      this.sql.exec(`CREATE TABLE IF NOT EXISTS ${table} (
+        hanzi TEXT PRIMARY KEY,
+        shown_at INTEGER NOT NULL
+      )`);
+    }
   }
 
   /** SQLite has no ADD COLUMN IF NOT EXISTS. Older rows keep NULL. */
@@ -361,7 +414,7 @@ export class Learner extends DurableObject<Env> {
   private logReviews(
     events: readonly AppliedReview[],
     now: number,
-    source: "chat" | "practice",
+    source: string,
     sentence: string | null,
     focus: string | null,
   ): void {
@@ -445,12 +498,12 @@ export class Learner extends DurableObject<Env> {
       .toArray();
   }
 
-  private cards(): Card[] {
+  private cards(table = "cards"): Card[] {
     const rows = this.sql
       .exec<CardRow>(
         `SELECT hanzi, state, stability, difficulty, due, last_review, reps, lapses,
                 elapsed_days, scheduled_days, learning_step
-         FROM cards`,
+         FROM ${table}`,
       )
       .toArray();
     const cards: Card[] = [];
@@ -485,20 +538,31 @@ export class Learner extends DurableObject<Env> {
     }
   }
 
-  private seenSentences(): { hanzi: string; shownAt: number }[] {
+  private deckTrace(deck: PracticeDeck): Trace | null {
+    const raw = this.meta(`${DECK_STORE[deck].meta}_trace`);
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw) as Trace;
+    } catch {
+      return null;
+    }
+  }
+
+  private seenSentences(deck: PracticeDeck): { hanzi: string; shownAt: number }[] {
     return this.sql
       .exec<{ hanzi: string; shown_at: number }>(
-        "SELECT hanzi, shown_at FROM seen_sentences",
+        `SELECT hanzi, shown_at FROM ${DECK_STORE[deck].seen}`,
       )
       .toArray()
       .map((row) => ({ hanzi: row.hanzi, shownAt: row.shown_at }));
   }
 
-  private activePractice(): PracticeActive | null {
-    const hanzi = this.meta("practice");
+  private activePractice(deck: PracticeDeck): PracticeActive | null {
+    const key = DECK_STORE[deck].meta;
+    const hanzi = this.meta(key);
     if (!hanzi) return null;
-    const purpose = this.meta("practice_purpose");
-    const focus = this.meta("practice_focus");
+    const purpose = this.meta(`${key}_purpose`);
+    const focus = this.meta(`${key}_focus`);
     return {
       hanzi,
       purpose: purpose === "introduce" ? "introduce" : "review",
@@ -506,9 +570,10 @@ export class Learner extends DurableObject<Env> {
     };
   }
 
-  private practiceWhy(): PracticeWhy | null {
-    const raw = this.meta("practice_why");
-    if (!raw || !this.meta("practice")) return null;
+  private practiceWhy(deck: PracticeDeck): PracticeWhy | null {
+    const key = DECK_STORE[deck].meta;
+    const raw = this.meta(`${key}_why`);
+    if (!raw || !this.meta(key)) return null;
     try {
       return JSON.parse(raw) as PracticeWhy;
     } catch {
@@ -524,9 +589,9 @@ export class Learner extends DurableObject<Env> {
     this.setMeta("schedule_rev", String(this.revision() + 1));
   }
 
-  private writeCard(card: Card): void {
+  private writeCard(card: Card, table = "cards"): void {
     this.sql.exec(
-      `INSERT INTO cards (
+      `INSERT INTO ${table} (
         hanzi, state, stability, difficulty, due, last_review, reps, lapses,
         elapsed_days, scheduled_days, learning_step
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)

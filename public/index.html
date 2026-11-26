@@ -76,6 +76,17 @@
           >
             Pinyin
           </button>
+          <button
+            type="button"
+            class="tab"
+            id="tab-listening"
+            role="tab"
+            aria-selected="false"
+            aria-controls="practice-panel"
+            tabindex="-1"
+          >
+            Listening
+          </button>
         </div>
         <div id="chat-panel" role="tabpanel" aria-labelledby="tab-chat">
           <ol id="messages"></ol>
@@ -100,7 +111,7 @@
           <div id="practice-stage"></div>
           <div class="practice-foot">
             <p id="practice-status" role="status"></p>
-            <p class="practice-hint">
+            <p class="practice-hint" id="practice-hint">
               Type the pinyin under the current word. A mismatch stays until it matches.
               Escape shows the answer, and showing it counts as a miss.
             </p>

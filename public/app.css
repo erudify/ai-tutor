@@ -313,7 +313,8 @@ main {
 }
 
 .message .body .lookup,
-.practice-history-text .lookup {
+.practice-history-text .lookup,
+.listen-slot .lookup {
   display: inline;
   margin: 0;
   padding: 0;
@@ -331,7 +332,9 @@ main {
 .message .body .lookup:hover,
 .message .body .lookup:focus-visible,
 .practice-history-text .lookup:hover,
-.practice-history-text .lookup:focus-visible {
+.practice-history-text .lookup:focus-visible,
+.listen-slot .lookup:hover,
+.listen-slot .lookup:focus-visible {
   color: var(--cinnabar);
   background: var(--accent-wash);
   border-radius: 0.15rem;
@@ -683,6 +686,64 @@ main {
   margin: 0;
   padding: 0.22rem 0.35rem;
   text-align: center;
+}
+
+/* Listening: the sentence is heard, so each word is a blank sized to its characters. */
+.listen-play {
+  padding: 0.35rem 0.9rem;
+  font-size: 0.9rem;
+}
+
+.listen-sentence {
+  gap: 0.35rem 0.45rem;
+}
+
+.listen-answer {
+  height: 1.55rem;
+  font-family: "Noto Serif SC", "Songti SC", serif;
+  font-size: 1.05rem;
+  line-height: 1.55rem;
+  color: var(--cinnabar);
+}
+
+.listen-field {
+  position: relative;
+}
+
+.listen-sizer {
+  display: block;
+  visibility: hidden;
+  padding: 0 0.3em;
+  border-bottom: 2px solid transparent;
+  white-space: nowrap;
+}
+
+.listen-blank {
+  border-bottom: 2px dashed var(--line);
+}
+
+.listen-field input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  margin: 0;
+  padding: 0 0.15em;
+  font-family: "Noto Serif SC", "Songti SC", serif;
+  font-size: 2rem;
+  line-height: 1.2;
+  text-align: center;
+}
+
+.listen-done {
+  display: block;
+  padding: 0 0.3em;
+  border-bottom: 2px solid transparent;
+}
+
+.listen-done.shown {
+  color: var(--cinnabar);
 }
 
 .practice-foot {

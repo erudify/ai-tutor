@@ -432,3 +432,57 @@ describe("gradePractice", () => {
     expect(at?.due).toBe(now + 14 * 86_400_000);
   });
 });
+
+describe("listening deck", () => {
+  const listening = (reading: Card[]) => ({ deck: "listening" as const, reading });
+
+  it("has nothing to introduce before any word is known from reading", () => {
+    expect(planPractice(corpus, [], [], now, listening([]))).toBeNull();
+  });
+
+  it("introduces the first curriculum word known from reading, in its sentence", () => {
+    const reading = [held({ hanzi: "我" }), held({ hanzi: "在" })];
+    const plan = planPractice(corpus, [], [], now, listening(reading))!;
+    expect(plan.active).toEqual({
+      hanzi: "我在学校。",
+      purpose: "introduce",
+      focus: "我",
+    });
+    expect(plan.why.reasons[0]).toMatch(/^First listen\./);
+  });
+
+  it("skips a word whose reading card does not yet count as known", () => {
+    const reading = [
+      held({ hanzi: "我", state: State.Learning, reps: 1, lapses: 1 }),
+      held({ hanzi: "在" }),
+    ];
+    expect(planPractice(corpus, [], [], now, listening(reading))?.active.focus).toBe(
+      "在",
+    );
+  });
+
+  it("keeps its own cards: a reading card says nothing about listening", () => {
+    const reading = [held({ hanzi: "我" })];
+    const heard = [held({ hanzi: "我" })];
+    expect(planPractice(corpus, heard, [], now, listening(reading))).toBeNull();
+  });
+
+  it("reviews a due listening card even without aligned pinyin", () => {
+    const reading = ["我", "上班"].map((hanzi) => held({ hanzi }));
+    const heard = [
+      held({ hanzi: "我" }),
+      held({ hanzi: "上班", due: now, stability: 0, lastReview: null }),
+    ];
+    expect(pickPractice(corpus, heard, [], now, listening(reading))).toEqual({
+      hanzi: "我上班。",
+      purpose: "review",
+      focus: "上班",
+    });
+  });
+
+  it("skips a due word that has no sentence to speak", () => {
+    const reading = [held({ hanzi: "蓝色" })];
+    const heard = [held({ hanzi: "蓝色", due: now, stability: 0, lastReview: null })];
+    expect(pickPractice(corpus, heard, [], now, listening(reading))).toBeNull();
+  });
+});
