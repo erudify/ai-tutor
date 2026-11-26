@@ -8,8 +8,54 @@
   --cinnabar: #9c341c;
   --moss: #24584a;
   --card: #fffaf2;
+  --on-ink: #f8f3ea;
+  --user-bubble: #f6ebe3;
+  --wash: rgb(36 28 22 / 3%);
+  --wash-strong: rgb(36 28 22 / 6%);
+  --accent-wash: rgb(156 52 28 / 8%);
+  --accent-rule: rgb(156 52 28 / 45%);
   --shadow: 0 16px 40px rgb(60 40 20 / 8%);
   font-family: "Noto Sans SC", "PingFang SC", "Hiragino Sans GB", sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --paper: #15110e;
+    --paper-2: #241d18;
+    --ink: #ece3d4;
+    --soft: #a99b8a;
+    --line: #3b3129;
+    --cinnabar: #e2805f;
+    --moss: #74b8a2;
+    --card: #1d1814;
+    --on-ink: #1a1511;
+    --user-bubble: #2c1f19;
+    --wash: rgb(236 227 212 / 4%);
+    --wash-strong: rgb(236 227 212 / 9%);
+    --accent-wash: rgb(226 128 95 / 12%);
+    --accent-rule: rgb(226 128 95 / 50%);
+    --shadow: 0 16px 40px rgb(0 0 0 / 35%);
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --paper: #15110e;
+  --paper-2: #241d18;
+  --ink: #ece3d4;
+  --soft: #a99b8a;
+  --line: #3b3129;
+  --cinnabar: #e2805f;
+  --moss: #74b8a2;
+  --card: #1d1814;
+  --on-ink: #1a1511;
+  --user-bubble: #2c1f19;
+  --wash: rgb(236 227 212 / 4%);
+  --wash-strong: rgb(236 227 212 / 9%);
+  --accent-wash: rgb(226 128 95 / 12%);
+  --accent-rule: rgb(226 128 95 / 50%);
+  --shadow: 0 16px 40px rgb(0 0 0 / 35%);
 }
 
 * {
@@ -24,7 +70,7 @@ body {
   overflow: hidden;
   color: var(--ink);
   background:
-    radial-gradient(circle at top left, rgb(156 52 28 / 8%), transparent 28rem),
+    radial-gradient(circle at top left, var(--accent-wash), transparent 28rem),
     var(--paper);
 }
 
@@ -118,7 +164,7 @@ button:focus-visible {
 button {
   border: 0;
   background: var(--ink);
-  color: #f8f3ea;
+  color: var(--on-ink);
   border-radius: 999px;
   padding: 0.5rem 0.95rem;
   cursor: pointer;
@@ -127,6 +173,26 @@ button {
 button:disabled {
   cursor: wait;
   opacity: 0.6;
+}
+
+.theme {
+  display: inline-flex;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0.15rem;
+  background: var(--card);
+}
+
+.theme button {
+  background: transparent;
+  color: var(--soft);
+  padding: 0.3rem 0.7rem;
+  font-size: 0.85rem;
+}
+
+.theme button[aria-pressed="true"] {
+  background: var(--ink);
+  color: var(--on-ink);
 }
 
 #reset {
@@ -180,7 +246,7 @@ main {
 
 .tab[aria-selected="true"] {
   background: var(--ink);
-  color: #f8f3ea;
+  color: var(--on-ink);
   border-color: var(--ink);
 }
 
@@ -257,14 +323,14 @@ main {
   font: inherit;
   line-height: inherit;
   cursor: pointer;
-  text-decoration: underline dotted rgb(156 52 28 / 45%);
+  text-decoration: underline dotted var(--accent-rule);
   text-underline-offset: 0.18em;
 }
 
 .message .body .lookup:hover,
 .message .body .lookup:focus-visible {
   color: var(--cinnabar);
-  background: rgb(156 52 28 / 8%);
+  background: var(--accent-wash);
   border-radius: 0.15rem;
 }
 
@@ -322,7 +388,7 @@ main {
 .message .body code {
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
   font-size: 0.92em;
-  background: rgb(36 28 22 / 6%);
+  background: var(--wash-strong);
   border-radius: 0.25rem;
   padding: 0.05em 0.28em;
 }
@@ -365,7 +431,7 @@ main {
 
 .message.user {
   align-self: end;
-  background: #f6ebe3;
+  background: var(--user-bubble);
   border-left: 3px solid var(--cinnabar);
 }
 
@@ -387,7 +453,7 @@ main {
 .message.state details {
   border: 1px dashed var(--line);
   border-radius: 0.6rem;
-  background: rgb(36 28 22 / 3%);
+  background: var(--wash);
 }
 
 .message.system summary,

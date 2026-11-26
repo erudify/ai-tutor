@@ -11,6 +11,7 @@
       rel="stylesheet"
     />
     <link rel="stylesheet" href="/app.css" />
+    <script src="/theme.js"></script>
   </head>
   <body>
     <header class="top">
@@ -33,6 +34,17 @@
           />
         </label>
         <button type="button" id="reset">Reset schedule</button>
+        <div class="theme" id="theme" role="group" aria-label="Theme">
+          <button type="button" data-theme-choice="system" aria-pressed="true">
+            Auto
+          </button>
+          <button type="button" data-theme-choice="light" aria-pressed="false">
+            Light
+          </button>
+          <button type="button" data-theme-choice="dark" aria-pressed="false">
+            Dark
+          </button>
+        </div>
         <p id="backend" class="backend"></p>
       </form>
     </header>
