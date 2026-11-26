@@ -1,4 +1,4 @@
-import { pickExample } from "../corpus/examples";
+import { pickExample, type IndexedExample } from "../corpus/examples";
 import type { Corpus, Word } from "../corpus/model";
 import {
   DAY_MS,
@@ -116,18 +116,25 @@ function retrievability(card: Card, now: number): number {
   return fsrs().forgettingCurve(elapsed, card.stability);
 }
 
+/**
+ * True when a sentence would add a word.
+ * Example tokens are curriculum words, so a token with no card is a new word.
+ * A card in any state, including Learning, means the word is already in play.
+ */
+export function introducesNewWord(
+  tokens: readonly string[],
+  held: ReadonlySet<string>,
+): boolean {
+  return tokens.some((token) => !held.has(token));
+}
+
 function exampleFor(
   corpus: Corpus,
   word: Word,
   known: ReadonlySet<string>,
+  held: ReadonlySet<string> | null = null,
 ): Suggestion {
-  const chosen = pickExample(
-    corpus.examplesByToken.get(word.hanzi) ?? [],
-    word.hanzi,
-    word.exampleLimit,
-    (hanzi) => corpus.byHanzi.get(hanzi)?.ord ?? null,
-    known,
-  );
+  const chosen = chooseExample(corpus, word, known, held);
   return {
     purpose: "review",
     hanzi: word.hanzi,
@@ -137,6 +144,45 @@ function exampleFor(
     examplePinyin: chosen?.pinyin ?? word.examplePinyin,
     exampleEnglish: chosen?.english ?? word.exampleEnglish,
   };
+}
+
+/**
+ * Review stays inside words that already have cards when any sentence can.
+ * A word past this item's example window still counts as already introduced.
+ */
+function chooseExample(
+  corpus: Corpus,
+  word: Word,
+  known: ReadonlySet<string>,
+  held: ReadonlySet<string> | null,
+): IndexedExample | null {
+  const sentences = corpus.examplesByToken.get(word.hanzi) ?? [];
+  const ordOf = (hanzi: string): number | null =>
+    corpus.byHanzi.get(hanzi)?.ord ?? null;
+  if (!held) return pickExample(sentences, word.hanzi, word.exampleLimit, ordOf, known);
+  const familiar = sentences.filter(
+    (sentence) => !introducesNewWord(sentence.tokens, held),
+  );
+  if (familiar.length === 0) {
+    return pickExample(sentences, word.hanzi, word.exampleLimit, ordOf, known);
+  }
+  const limit = word.exampleLimit;
+  return (
+    pickExample(familiar, word.hanzi, limit, ordOf, known) ??
+    pickExample(
+      familiar,
+      word.hanzi,
+      limit,
+      (hanzi) => {
+        const ord = ordOf(hanzi);
+        if (limit !== null && held.has(hanzi) && (ord === null || ord > limit))
+          return limit;
+        return ord;
+      },
+      known,
+    ) ??
+    familiar[0]
+  );
 }
 
 export function stableHanzi(cards: readonly Card[], now: number): Set<string> {
@@ -153,7 +199,10 @@ export function stableHanzi(cards: readonly Card[], now: number): Set<string> {
   return stable;
 }
 
-/** Due reviews first. A new curriculum word only when nothing is due. */
+/**
+ * Due reviews first. A new curriculum word only when nothing is due.
+ * A review sentence adds a word with no card only when every sentence would.
+ */
 export function suggest(
   corpus: Corpus,
   cards: readonly Card[],
@@ -161,6 +210,7 @@ export function suggest(
 ): Suggestion[] {
   const byHanzi = new Map(cards.map((card) => [card.hanzi, card]));
   const known = knownHanzi(cards);
+  const held = new Set(cards.map((card) => card.hanzi));
   const due = cards
     .filter((card) => card.state !== State.New && card.due <= now)
     .sort((a, b) => retrievability(a, now) - retrievability(b, now))
@@ -169,7 +219,7 @@ export function suggest(
   for (const card of due) {
     const word = corpus.byHanzi.get(card.hanzi);
     if (!word) continue;
-    suggestions.push({ ...exampleFor(corpus, word, known), purpose: "review" });
+    suggestions.push({ ...exampleFor(corpus, word, known, held), purpose: "review" });
   }
   if (suggestions.length === 0) {
     const next = corpus.curriculum.find((word) => !byHanzi.has(word.hanzi));

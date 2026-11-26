@@ -68,6 +68,7 @@ describe("vendored curriculum", () => {
       purpose: "introduce",
       focus: "的",
     });
+    expect(opening.english).toBe("This is my book.");
     expect(opening.pieces).toEqual([
       { kind: "word", hanzi: "这", pinyin: "zhè" },
       { kind: "word", hanzi: "是", pinyin: "shì" },

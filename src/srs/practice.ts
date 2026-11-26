@@ -2,7 +2,12 @@ import type { Corpus } from "../corpus/model";
 import type { IndexedExample } from "../corpus/examples";
 import { alignSentencePinyin, pinyinSlice } from "../sentence-pinyin";
 import { fsrs, State, type Card } from "./fsrs";
-import { countsAsKnown, stableHanzi, type Evidence } from "./schedule";
+import {
+  countsAsKnown,
+  introducesNewWord,
+  stableHanzi,
+  type Evidence,
+} from "./schedule";
 
 export type PracticePurpose = "review" | "introduce";
 
@@ -22,6 +27,7 @@ export type PracticePiece =
 
 export type PracticePrompt = {
   hanzi: string;
+  english: string;
   purpose: PracticePurpose;
   focus: string | null;
   pieces: PracticePiece[];
@@ -163,9 +169,10 @@ function piecesFromSentence(
 /**
  * The next pinyin prompt.
  * Nothing due: the introducing sentence of the next curriculum word with no card.
- * Something due: one sentence for the most urgent word. Prefer companions the
- * student knows well, then a sentence they have not seen, then the one shown
- * furthest in the past.
+ * Something due: one sentence for the most urgent word. That sentence stays
+ * inside words that already have cards when any indexed sentence can.
+ * Among those, prefer companions the student knows well, then a sentence they
+ * have not seen, then the one shown furthest in the past.
  * A sentence is eligible only when its file pinyin lines up with its characters.
  */
 export function pickPractice(
@@ -186,7 +193,16 @@ export function pickPractice(
     const options = (corpus.examplesByToken.get(word.hanzi) ?? []).filter(
       sentenceAligns,
     );
-    const chosen = bestSentence(options, word.hanzi, stable, known, seenAt);
+    const familiar = options.filter(
+      (example) => !introducesNewWord(example.tokens, held),
+    );
+    const chosen = bestSentence(
+      familiar.length > 0 ? familiar : options,
+      word.hanzi,
+      stable,
+      known,
+      seenAt,
+    );
     if (chosen) {
       return { hanzi: chosen.hanzi, purpose: "review", focus: word.hanzi };
     }
@@ -211,6 +227,7 @@ export function promptFromActive(
   if (example) {
     return {
       hanzi: active.hanzi,
+      english: example.english,
       purpose: active.purpose,
       focus: active.focus,
       pieces: piecesFromSentence(example.hanzi, example.tokens, example.pinyin),
@@ -221,6 +238,7 @@ export function promptFromActive(
   if (word?.pinyin) {
     return {
       hanzi: active.hanzi,
+      english: word.gloss,
       purpose: active.purpose,
       focus: active.focus,
       pieces: [{ kind: "word", hanzi: word.hanzi, pinyin: word.pinyin }],
@@ -228,6 +246,7 @@ export function promptFromActive(
   }
   return {
     hanzi: active.hanzi,
+    english: "",
     purpose: active.purpose,
     focus: active.focus,
     pieces: [{ kind: "gap", text: active.hanzi }],

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { BuiltWord } from "../src/corpus/build";
+import type { BuiltSentence, BuiltWord } from "../src/corpus/build";
 import { indexCorpus } from "../src/corpus/model";
 import {
   applyEvidence,
@@ -7,10 +7,11 @@ import {
   KNOWN_INTERVAL_DAYS,
   LOW_KNOWN_LIMIT,
   renderBrief,
+  suggest,
   type Frontier,
   type Suggestion,
 } from "../src/srs/schedule";
-import { DAY_MS, freshCard, fsrs, Rating, State } from "../src/srs/fsrs";
+import { DAY_MS, freshCard, fsrs, Rating, State, type Card } from "../src/srs/fsrs";
 
 const now = 1_700_000_000_000;
 const allowed = new Set(["我", "饺子"]);
@@ -197,5 +198,104 @@ describe("review lapses", () => {
     expect(graduated.lapses).toBe(0);
     const missed = fsrs().review(graduated, Rating.Again, now + DAY_MS);
     expect(missed.lapses).toBe(1);
+  });
+});
+
+describe("review sentences", () => {
+  function sentence(hanzi: string): BuiltSentence {
+    return { id: hanzi, hanzi, pinyin: "", english: "" };
+  }
+
+  const reviewCorpus = indexCorpus(
+    [
+      word({
+        hanzi: "我",
+        gloss: "I",
+        ord: 0,
+        curriculum: true,
+        exampleHanzi: "我上班。",
+      }),
+      word({
+        hanzi: "他",
+        gloss: "he",
+        ord: 1,
+        curriculum: true,
+        exampleHanzi: "他。",
+      }),
+      word({
+        hanzi: "上班",
+        gloss: "work",
+        ord: 2,
+        curriculum: true,
+        exampleHanzi: "我上班。",
+      }),
+      word({
+        hanzi: "学校",
+        gloss: "school",
+        ord: 8,
+        curriculum: true,
+        exampleHanzi: "学校。",
+      }),
+    ],
+    [sentence("我上班。"), sentence("他上班。"), sentence("学校上班。")],
+  );
+
+  function card(hanzi: string, partial: Partial<Card> = {}): Card {
+    return {
+      ...freshCard(hanzi, now),
+      state: State.Learning,
+      stability: 0,
+      difficulty: 5,
+      due: now + 60_000,
+      lastReview: null,
+      reps: 1,
+      lapses: 1,
+      elapsedDays: 0,
+      scheduledDays: 0,
+      ...partial,
+    };
+  }
+
+  it("reviews with a sentence whose other words already have cards", () => {
+    const cards = [
+      card("我"),
+      card("上班", { due: now, reps: 2, state: State.Review }),
+    ];
+    expect(suggest(reviewCorpus, cards, now)).toEqual([
+      expect.objectContaining({
+        purpose: "review",
+        hanzi: "上班",
+        exampleHanzi: "我上班。",
+      }),
+    ]);
+  });
+
+  it("uses a later word the student already has rather than adding one", () => {
+    const cards = [
+      card("学校"),
+      card("上班", { due: now, reps: 2, state: State.Review }),
+    ];
+    expect(suggest(reviewCorpus, cards, now)).toEqual([
+      expect.objectContaining({
+        purpose: "review",
+        hanzi: "上班",
+        exampleHanzi: "学校上班。",
+      }),
+    ]);
+  });
+
+  it("still introduces the next word in a sentence that contains new words", () => {
+    expect(suggest(reviewCorpus, [], now)).toEqual([
+      expect.objectContaining({
+        purpose: "introduce",
+        hanzi: "我",
+        exampleHanzi: "我上班。",
+      }),
+    ]);
+  });
+
+  it("reviews with a sentence that adds a word when every sentence does", () => {
+    const cards = [card("上班", { due: now, reps: 2, state: State.Review })];
+    expect(suggest(reviewCorpus, cards, now)[0]?.exampleHanzi).toBe("他上班。");
   });
 });

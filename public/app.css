@@ -454,9 +454,67 @@ main {
   min-height: 0;
   overflow: auto;
   display: flex;
+  flex-direction: column;
+  justify-content: safe center;
   align-items: center;
-  justify-content: center;
-  padding: 1.5rem 1.2rem;
+  padding: 1.25rem 1.2rem 1.5rem;
+}
+
+.practice-stack {
+  width: min(40rem, 100%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1.5rem;
+}
+
+.practice-history {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.95rem;
+  width: 100%;
+}
+
+.practice-history li {
+  text-align: center;
+}
+
+.practice-flight {
+  position: fixed;
+  z-index: 5;
+  margin: 0;
+  pointer-events: none;
+  text-align: center;
+}
+
+.practice-history-zh,
+.practice-history-en {
+  margin: 0;
+  text-align: center;
+}
+
+.practice-history-zh {
+  font-family: "Noto Serif SC", "Songti SC", serif;
+  font-size: 1.2rem;
+  line-height: 1.45;
+}
+
+.practice-history-en {
+  margin-top: 0.12rem;
+  color: var(--soft);
+  font-size: 0.92rem;
+  line-height: 1.4;
+}
+
+.practice-current {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.8rem;
 }
 
 .practice-sentence {
@@ -472,7 +530,6 @@ main {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 0.3rem;
 }
 
 .practice-hanzi,
@@ -482,21 +539,64 @@ main {
   line-height: 1.2;
 }
 
+/* The pinyin text sets the box. The input fills that box, so the characters stay put. */
+.practice-field {
+  position: relative;
+  margin-top: 1.55rem;
+}
+
+.practice-sizer,
+.practice-field input,
 .practice-reading {
-  min-height: 1.25rem;
   font-size: 0.95rem;
+  line-height: 1.3;
+  font-family: inherit;
+}
+
+.practice-sizer {
+  visibility: hidden;
+  display: block;
+  white-space: nowrap;
+  padding: 0.22rem 0.35rem;
+  border: 1px solid transparent;
+}
+
+.practice-reading {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 0.2rem);
+  height: 1.25rem;
+  overflow: hidden;
+  text-align: center;
+  white-space: nowrap;
   color: var(--soft);
+  pointer-events: none;
+}
+
+.practice-reading.filled {
+  top: 0;
+  bottom: 0;
+  height: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.22rem 0.35rem;
 }
 
 .practice-reading.shown {
   color: var(--cinnabar);
 }
 
-.practice-slot input {
+.practice-field input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  margin: 0;
+  padding: 0.22rem 0.35rem;
   text-align: center;
-  min-width: 4.5rem;
-  padding-left: 0.3rem;
-  padding-right: 0.3rem;
 }
 
 .practice-foot {
@@ -640,6 +740,15 @@ ul {
     display: grid;
     grid-template-columns: 1fr;
     grid-template-rows: minmax(0, 1fr) minmax(9rem, 32vh);
+  }
+
+  main:has(#practice-panel:not([hidden])) {
+    grid-template-rows: minmax(0, 1fr) auto;
+  }
+
+  main:has(#practice-panel:not([hidden])) .ledger {
+    max-height: 9rem;
+    overflow: auto;
   }
 
   .who {

@@ -30,6 +30,9 @@ const practiceStatus = document.querySelector("#practice-status");
 const tabChat = document.querySelector("#tab-chat");
 const tabPractice = document.querySelector("#tab-practice");
 
+const PRACTICE_HISTORY_LIMIT = 10;
+const PRACTICE_SETTLE_MS = 320;
+
 const practice = {
   prompt: null,
   index: 0,
@@ -38,7 +41,12 @@ const practice = {
   pending: false,
   error: "",
   loadedFor: "",
+  history: [],
 };
+
+/** Glyph box of the sentence that just finished, used once for the settle animation. */
+let practiceArrival = null;
+let practiceGhost = null;
 
 let practiceEpoch = 0;
 
@@ -610,21 +618,198 @@ function wordPieces(prompt) {
   return (prompt?.pieces || []).filter((piece) => piece.kind === "word");
 }
 
+function rememberExercise(prompt) {
+  practice.history.push({ hanzi: prompt.hanzi, english: prompt.english || "" });
+  if (practice.history.length > PRACTICE_HISTORY_LIMIT) {
+    practice.history.splice(0, practice.history.length - PRACTICE_HISTORY_LIMIT);
+  }
+}
+
+function motionOk() {
+  return !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
+function clearFlight() {
+  practiceGhost?.remove();
+  practiceGhost = null;
+}
+
+/** Tight box around the characters, ignoring the full-width line they sit in. */
+function inkBox(node) {
+  const range = document.createRange();
+  range.selectNodeContents(node);
+  const box = range.getBoundingClientRect();
+  if (box.width === 0 && box.height === 0) return node.getBoundingClientRect();
+  return box;
+}
+
+/** Union of the large characters, so the flight starts on the sentence itself. */
+function measureGlyphs(sentence) {
+  const nodes = sentence.querySelectorAll(".practice-hanzi, .practice-gap");
+  let top = Infinity;
+  let left = Infinity;
+  let right = -Infinity;
+  let bottom = -Infinity;
+  let fontSize = 0;
+  for (const node of nodes) {
+    const box = node.getBoundingClientRect();
+    if (box.width === 0 && box.height === 0) continue;
+    top = Math.min(top, box.top);
+    left = Math.min(left, box.left);
+    right = Math.max(right, box.right);
+    bottom = Math.max(bottom, box.bottom);
+    if (!fontSize) fontSize = parseFloat(getComputedStyle(node).fontSize) || 0;
+  }
+  if (top === Infinity) return null;
+  return { top, left, width: right - left, height: bottom - top, fontSize };
+}
+
+function currentInFrame() {
+  const active = practiceStage.querySelector(".practice-current");
+  if (!active) return true;
+  const frame = practiceStage.getBoundingClientRect();
+  const box = active.getBoundingClientRect();
+  return box.top >= frame.top - 8 && box.bottom <= frame.bottom + 8;
+}
+
+/** Keep the exercise on screen. A short window scrolls instead of covering the sentence. */
+function pinPractice() {
+  const active = practiceStage.querySelector(".practice-current");
+  if (!active) return;
+  const frame = practiceStage.getBoundingClientRect();
+  let box = active.getBoundingClientRect();
+  if (box.bottom > frame.bottom - 8) {
+    practiceStage.scrollTop += box.bottom - frame.bottom + 12;
+    box = active.getBoundingClientRect();
+  }
+  if (box.top < frame.top + 8) {
+    practiceStage.scrollTop -= frame.top + 8 - box.top;
+  }
+}
+
+function releaseOpacity(node) {
+  if (node?.isConnected) node.style.opacity = "";
+}
+
+function fadeIn(node, duration, delay) {
+  if (!node) return;
+  const fade = node.animate([{ opacity: 0 }, { opacity: 1 }], {
+    duration,
+    delay,
+    easing: "ease-out",
+    fill: "both",
+  });
+  void fade.finished.then(
+    () => releaseOpacity(node),
+    () => releaseOpacity(node),
+  );
+}
+
+/** Hide the resting copy before paint so the flight is the only thing that moves. */
+function prepareArrival(from) {
+  if (!from || !motionOk()) return;
+  const item = practiceStage.querySelector(".practice-history li:last-child");
+  const zh = item?.querySelector(".practice-history-zh");
+  const english = item?.querySelector(".practice-history-en");
+  const sentence = practiceStage.querySelector(".practice-sentence");
+  if (zh) zh.style.opacity = "0";
+  if (english) english.style.opacity = "0";
+  if (sentence) sentence.style.opacity = "0";
+}
+
+function settlePractice(from) {
+  if (!from || !motionOk()) return;
+  requestAnimationFrame(() => {
+    pinPractice();
+    const item = practiceStage.querySelector(".practice-history li:last-child");
+    const zh = item?.querySelector(".practice-history-zh");
+    const english = item?.querySelector(".practice-history-en");
+    const sentence = practiceStage.querySelector(".practice-sentence");
+    if (zh && zh.style.opacity === "0") {
+      const to = inkBox(zh);
+      const dx = from.left + from.width / 2 - (to.left + to.width / 2);
+      const dy = from.top + from.height / 2 - (to.top + to.height / 2);
+      const toSize = parseFloat(getComputedStyle(zh).fontSize) || from.fontSize || 1;
+      const scale = Math.min(1.7, Math.max(1, (from.fontSize || toSize) / toSize));
+      const ghost = document.createElement("p");
+      ghost.className = "practice-history-zh practice-flight";
+      ghost.lang = "zh-Hans";
+      ghost.textContent = zh.textContent;
+      ghost.style.left = `${to.left}px`;
+      ghost.style.top = `${to.top}px`;
+      ghost.style.width = `${Math.max(to.width, 1)}px`;
+      document.body.append(ghost);
+      practiceGhost = ghost;
+      const flight = ghost.animate(
+        [
+          { transform: `translate(${dx}px, ${dy}px) scale(${scale})` },
+          { transform: "translate(0px, 0px) scale(1)" },
+        ],
+        { duration: PRACTICE_SETTLE_MS, easing: "cubic-bezier(0.22, 1, 0.36, 1)" },
+      );
+      const land = () => {
+        if (practiceGhost === ghost) practiceGhost = null;
+        ghost.remove();
+        releaseOpacity(zh);
+      };
+      void flight.finished.then(land, land);
+    } else {
+      releaseOpacity(zh);
+    }
+    fadeIn(english, 200, 90);
+    fadeIn(sentence, 220, 80);
+  });
+}
+
+function renderHistory(stack) {
+  if (practice.history.length === 0) return;
+  const list = document.createElement("ol");
+  list.className = "practice-history";
+  list.setAttribute("aria-label", "Completed exercises");
+  for (const item of practice.history) {
+    const row = document.createElement("li");
+    const chinese = addText(row, "p", "practice-history-zh", item.hanzi);
+    chinese.lang = "zh-Hans";
+    if (item.english) {
+      const english = addText(row, "p", "practice-history-en", item.english);
+      english.lang = "en";
+    }
+    list.append(row);
+  }
+  stack.append(list);
+}
+
 function renderPractice() {
+  const from = practiceArrival;
+  practiceArrival = null;
+  const keepPlace = !from && !currentInFrame();
+  const keptScroll = practiceStage.scrollTop;
+  clearFlight();
   clear(practiceStage);
   practiceStatus.className = practice.error ? "error" : "";
   practiceStatus.textContent =
     practice.error || (practice.pending ? "Saving this sentence…" : "");
+  const stack = document.createElement("div");
+  stack.className = "practice-stack";
+  renderHistory(stack);
+  const current = document.createElement("div");
+  current.className = "practice-current";
+  stack.append(current);
+  practiceStage.append(stack);
+  if (keepPlace) practiceStage.scrollTop = keptScroll;
+  else pinPractice();
   const prompt = practice.prompt;
   if (!prompt) {
     if (practice.loadedFor) {
       addText(
-        practiceStage,
+        current,
         "p",
         "practice-empty",
         "Nothing is due, and the curriculum on file is finished.",
       );
     }
+    prepareArrival(from);
+    settlePractice(from);
     return;
   }
   const words = wordPieces(prompt);
@@ -641,10 +826,15 @@ function renderPractice() {
     const slot = document.createElement("div");
     slot.className = "practice-slot";
     addText(slot, "span", "practice-hanzi", piece.hanzi);
-    const reading = addText(slot, "span", "practice-reading", "");
+    const field = document.createElement("div");
+    field.className = "practice-field";
+    const sizer = addText(field, "span", "practice-sizer", piece.pinyin || piece.hanzi);
+    sizer.setAttribute("aria-hidden", "true");
+    const reading = addText(field, "span", "practice-reading", "");
     const revealed = practice.revealed.has(slotIndex);
     if (slotIndex < practice.index) {
       reading.textContent = practice.answers[slotIndex] || "";
+      reading.classList.add("filled");
       if (revealed) reading.classList.add("shown");
     } else if (slotIndex === practice.index) {
       if (revealed) {
@@ -659,7 +849,6 @@ function renderPractice() {
       input.setAttribute("autocorrect", "off");
       input.setAttribute("aria-label", `Pinyin for ${piece.hanzi}`);
       input.disabled = practice.pending;
-      input.style.width = `${Math.max(piece.pinyin.length + 1, 4)}ch`;
       const consider = () => {
         if (!input.isConnected || practice.pending) return;
         if (!pinyinMatches(input.value, piece.pinyin)) return;
@@ -697,23 +886,26 @@ function renderPractice() {
         if (event.isComposing) return;
         consider();
       });
-      slot.append(input);
+      field.append(input);
     }
+    slot.append(field);
     sentence.append(slot);
     wordIndex += 1;
   }
-  practiceStage.append(sentence);
+  current.append(sentence);
   if (practice.error && practice.index >= words.length && !practice.pending) {
     const retry = document.createElement("button");
     retry.type = "button";
     retry.textContent = "Save again";
     retry.addEventListener("click", () => void submitPractice());
-    practiceStage.append(retry);
+    current.append(retry);
   }
   const input = practiceStage.querySelector("input");
   if (input instanceof HTMLInputElement && !practicePanel.hidden && !practice.pending) {
-    input.focus();
+    input.focus({ preventScroll: true });
   }
+  prepareArrival(from);
+  settlePractice(from);
 }
 
 function acceptPrompt(prompt) {
@@ -734,9 +926,9 @@ async function loadPractice() {
   practice.error = "";
   practice.prompt = null;
   practice.loadedFor = "";
+  renderPractice();
   practiceStatus.className = "";
   practiceStatus.textContent = "Loading a sentence…";
-  clear(practiceStage);
   try {
     const response = await fetch(
       `/api/practice?learner=${encodeURIComponent(learner)}`,
@@ -781,6 +973,9 @@ async function submitPractice() {
       return;
     }
     if (!response.ok) throw new Error(body.error || "Could not save this sentence.");
+    const finished = practiceStage.querySelector(".practice-sentence");
+    rememberExercise(prompt);
+    practiceArrival = finished ? measureGlyphs(finished) : null;
     state.preview = body.preview;
     state.trace = body.trace;
     state.error = "";
@@ -804,6 +999,8 @@ function forgetPractice() {
   practice.pending = false;
   practice.error = "";
   practice.loadedFor = "";
+  practice.history = [];
+  practiceArrival = null;
   if (practicePanel.hidden) renderPractice();
   else void loadPractice();
 }

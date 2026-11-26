@@ -25,8 +25,8 @@ function word(
   };
 }
 
-function sentence(hanzi: string, pinyin: string): BuiltSentence {
-  return { id: hanzi, hanzi, pinyin, english: "" };
+function sentence(hanzi: string, pinyin: string, english = ""): BuiltSentence {
+  return { id: hanzi, hanzi, pinyin, english };
 }
 
 const corpus = indexCorpus(
@@ -157,6 +157,28 @@ describe("pickPractice", () => {
     });
   });
 
+  it("keeps a review inside words that already have cards", () => {
+    const cards = [
+      held({
+        hanzi: "我",
+        state: State.Learning,
+        stability: 0,
+        lastReview: null,
+        reps: 1,
+        lapses: 1,
+        due: now + 60_000,
+      }),
+      held({ hanzi: "上班", due: now, stability: 0, lastReview: null, reps: 2 }),
+    ];
+    expect(
+      pickPractice(corpus, cards, [{ hanzi: "我上班。", shownAt: now }], now),
+    ).toEqual({
+      hanzi: "我上班。",
+      purpose: "review",
+      focus: "上班",
+    });
+  });
+
   it("otherwise picks the sentence shown furthest in the past", () => {
     const cards = [
       held({ hanzi: "我" }),
@@ -260,11 +282,19 @@ describe("pickPractice", () => {
           exampleHanzi: hanzi,
         }),
       ],
-      [sentence(hanzi, "Wǒmen míngtiān yào qù tā jiā.")],
+      [
+        sentence(
+          hanzi,
+          "Wǒmen míngtiān yào qù tā jiā.",
+          "We are going to her house tomorrow.",
+        ),
+      ],
     );
     const pick = pickPractice(trip, [], [], now);
     expect(pick).toEqual({ hanzi, purpose: "introduce", focus: "我们" });
-    expect(promptFromActive(trip, pick!).pieces).toEqual([
+    const prompt = promptFromActive(trip, pick!);
+    expect(prompt.english).toBe("We are going to her house tomorrow.");
+    expect(prompt.pieces).toEqual([
       { kind: "word", hanzi: "我们", pinyin: "Wǒmen" },
       { kind: "word", hanzi: "明天", pinyin: "míngtiān" },
       { kind: "word", hanzi: "要", pinyin: "yào" },
@@ -323,9 +353,9 @@ describe("pickPractice", () => {
       now,
     );
     expect(pick).toEqual({ hanzi: "蓝色", purpose: "review", focus: "蓝色" });
-    expect(promptFromActive(corpus, pick!).pieces).toEqual([
-      { kind: "word", hanzi: "蓝色", pinyin: "lán sè" },
-    ]);
+    const alone = promptFromActive(corpus, pick!);
+    expect(alone.english).toBe("blue");
+    expect(alone.pieces).toEqual([{ kind: "word", hanzi: "蓝色", pinyin: "lán sè" }]);
   });
 
   it("returns nothing when the curriculum is finished and nothing is due", () => {
@@ -340,6 +370,7 @@ describe("gradePractice", () => {
   it("counts a revealed slot as a miss and still accepts the other words", () => {
     const prompt: PracticePrompt = {
       hanzi: "我在我",
+      english: "",
       purpose: "review",
       focus: "我",
       pieces: [
