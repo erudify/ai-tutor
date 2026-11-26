@@ -33,6 +33,10 @@
             maxlength="64"
           />
         </label>
+        <label class="toggle">
+          <input type="checkbox" id="show-debug" />
+          Internals
+        </label>
         <button type="button" id="reset">Reset schedule</button>
         <div class="theme" id="theme" role="group" aria-label="Theme">
           <button type="button" data-theme-choice="system" aria-pressed="true">
@@ -104,18 +108,31 @@
         </div>
       </section>
       <aside class="ledger" aria-label="Schedule">
-        <h2>Schedule</h2>
-        <p class="lede">
-          Updated from the student's message or from pinyin practice, then offered to
-          the tutor as optional guidance.
-        </p>
-        <dl id="counts"></dl>
-        <h3>Due</h3>
-        <ul id="due"></ul>
-        <h3>Next in the curriculum</h3>
-        <ul id="next"></ul>
-        <h3>Last turn</h3>
-        <div id="trace"></div>
+        <section id="debug" class="debug" aria-label="Scheduler internals" hidden>
+          <h2>Internals</h2>
+          <h3>This sentence</h3>
+          <div id="debug-now"></div>
+          <h3>Last answer</h3>
+          <div id="debug-last"></div>
+          <h3>Due queue</h3>
+          <div id="debug-queue"></div>
+          <h3>Knowledge model</h3>
+          <div id="debug-model"></div>
+        </section>
+        <div id="schedule">
+          <h2>Schedule</h2>
+          <p class="lede">
+            Updated from the student's message or from pinyin practice, then offered to
+            the tutor as optional guidance.
+          </p>
+          <dl id="counts"></dl>
+          <h3>Due</h3>
+          <ul id="due"></ul>
+          <h3>Next in the curriculum</h3>
+          <ul id="next"></ul>
+          <h3>Last turn</h3>
+          <div id="trace"></div>
+        </div>
       </aside>
     </main>
     <script type="module" src="/app.js"></script>

@@ -4,7 +4,9 @@ import { indexCorpus } from "../src/corpus/model";
 import { freshCard, State, type Card } from "../src/srs/fsrs";
 import {
   gradePractice,
+  knowledgeModel,
   pickPractice,
+  planPractice,
   promptFromActive,
   type PracticePrompt,
 } from "../src/srs/practice";
@@ -104,6 +106,40 @@ function held(partial: Partial<Card> & Pick<Card, "hanzi">): Card {
     ...partial,
   };
 }
+
+describe("planPractice reasons", () => {
+  it("says a new word is introduced because nothing is due", () => {
+    const plan = planPractice(corpus, [], [], now)!;
+    expect(plan.why.purpose).toBe("introduce");
+    expect(plan.why.focus).toBe("我");
+    expect(plan.why.reasons[0]).toMatch(/^New word\. Nothing is due/);
+    expect(plan.why.dueQueue).toEqual([]);
+  });
+
+  it("names the most urgent due word and marks the chosen sentence", () => {
+    const cards = [
+      held({ hanzi: "我" }),
+      held({ hanzi: "上班", due: now, stability: 0, lastReview: null, reps: 2 }),
+      held({ hanzi: "每天", reps: 1, stability: 1 }),
+    ];
+    const plan = planPractice(corpus, cards, [], now)!;
+    expect(plan.why.purpose).toBe("review");
+    expect(plan.why.reasons[0]).toMatch(/^Review\. 1 word is due\. 上班/);
+    expect(plan.why.dueQueue.map((row) => row.hanzi)).toEqual(["上班"]);
+    const chosen = plan.why.candidates.filter((row) => row.chosen);
+    expect(chosen.map((row) => row.hanzi)).toEqual([plan.active.hanzi]);
+  });
+
+  it("lists every card with its standing, soonest due first", () => {
+    const rows = knowledgeModel(
+      corpus,
+      [held({ hanzi: "我", due: now + 5 }), held({ hanzi: "在", due: now - 5 })],
+      now,
+    );
+    expect(rows.map((row) => row.hanzi)).toEqual(["在", "我"]);
+    expect(rows[0].gloss).toBe("at");
+  });
+});
 
 describe("pickPractice", () => {
   it("starts at the first curriculum sentence when nothing is due", () => {

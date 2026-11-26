@@ -1,6 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { State, type Card, type StateValue } from "./srs/fsrs";
-import type { PracticePurpose } from "./srs/practice";
+import type { PracticePurpose, PracticeWhy } from "./srs/practice";
 import type { AppliedReview } from "./srs/schedule";
 import type { Trace } from "./turn";
 
@@ -52,6 +52,8 @@ export type PracticeView = {
   cards: Card[];
   seen: { hanzi: string; shownAt: number }[];
   active: PracticeActive | null;
+  /** Why the active sentence was picked. Null for a sentence picked before this was kept. */
+  why: PracticeWhy | null;
   revision: number;
   trace: Trace | null;
 };
@@ -60,6 +62,7 @@ export type RememberInput = {
   hanzi: string;
   purpose: PracticePurpose;
   focus: string | null;
+  why: PracticeWhy;
   now: number;
 };
 
@@ -196,6 +199,7 @@ export class Learner extends DurableObject<Env> {
       cards: this.cards(),
       seen: this.seenSentences(),
       active: this.activePractice(),
+      why: this.practiceWhy(),
       revision: this.revision(),
       trace: this.lastTrace(),
     };
@@ -205,9 +209,13 @@ export class Learner extends DurableObject<Env> {
    * Remember the sentence the student is looking at.
    * A sentence already in progress wins, so a refresh does not reshuffle it.
    */
-  remember(input: RememberInput): { ok: true; active: PracticeActive } {
+  remember(input: RememberInput): {
+    ok: true;
+    active: PracticeActive;
+    why: PracticeWhy | null;
+  } {
     const existing = this.activePractice();
-    if (existing) return { ok: true, active: existing };
+    if (existing) return { ok: true, active: existing, why: this.practiceWhy() };
     const active: PracticeActive = {
       hanzi: input.hanzi,
       purpose: input.purpose === "introduce" ? "introduce" : "review",
@@ -223,8 +231,9 @@ export class Learner extends DurableObject<Env> {
       this.setMeta("practice", active.hanzi);
       this.setMeta("practice_purpose", active.purpose);
       this.setMeta("practice_focus", active.focus ?? "");
+      this.setMeta("practice_why", JSON.stringify(input.why));
     });
-    return { ok: true, active };
+    return { ok: true, active, why: input.why };
   }
 
   finishPractice(
@@ -495,6 +504,16 @@ export class Learner extends DurableObject<Env> {
       purpose: purpose === "introduce" ? "introduce" : "review",
       focus: focus ? focus : null,
     };
+  }
+
+  private practiceWhy(): PracticeWhy | null {
+    const raw = this.meta("practice_why");
+    if (!raw || !this.meta("practice")) return null;
+    try {
+      return JSON.parse(raw) as PracticeWhy;
+    } catch {
+      return null;
+    }
   }
 
   private revision(): number {

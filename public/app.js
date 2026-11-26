@@ -29,6 +29,13 @@ const practiceStage = document.querySelector("#practice-stage");
 const practiceStatus = document.querySelector("#practice-status");
 const tabChat = document.querySelector("#tab-chat");
 const tabPractice = document.querySelector("#tab-practice");
+const showDebug = document.querySelector("#show-debug");
+const debugSection = document.querySelector("#debug");
+const scheduleSection = document.querySelector("#schedule");
+const debugNow = document.querySelector("#debug-now");
+const debugLast = document.querySelector("#debug-last");
+const debugQueue = document.querySelector("#debug-queue");
+const debugModel = document.querySelector("#debug-model");
 
 const PRACTICE_HISTORY_LIMIT = 10;
 const PRACTICE_SETTLE_MS = 320;
@@ -42,6 +49,8 @@ const practice = {
   error: "",
   loadedFor: "",
   history: [],
+  /** Scheduler internals sent with each practice response. */
+  debug: null,
 };
 
 /** Glyph box of the sentence that just finished, used once for the settle animation. */
@@ -413,6 +422,245 @@ async function readTurn(response) {
   if (!finished) throw new Error("The reply was cut off.");
 }
 
+function debugOn() {
+  return showDebug.checked;
+}
+
+function relative(at, now = Date.now()) {
+  const delta = at - now;
+  const size = Math.round(Math.abs(delta) / 60_000);
+  if (size < 1) return delta > 0 ? "in <1 min" : "now";
+  let text;
+  if (size < 60) text = `${size} min`;
+  else if (size < 48 * 60) text = `${Math.round(size / 60)} h`;
+  else text = `${Math.round(size / 1440)} d`;
+  return delta < 0 ? `${text} ago` : `in ${text}`;
+}
+
+function fixed(value, digits = 1) {
+  return Number.isFinite(value) ? value.toFixed(digits) : "–";
+}
+
+function pct(value) {
+  const share = value * 100;
+  return share > 99 && share < 99.95 ? `${share.toFixed(1)}%` : `${Math.round(share)}%`;
+}
+
+function renderDebugNow(debug, prompt) {
+  clear(debugNow);
+  const why = debug?.why;
+  if (!prompt) {
+    addText(debugNow, "p", "muted", "No sentence. The curriculum may be finished.");
+    return;
+  }
+  const head = document.createElement("p");
+  head.className = `debug-mode ${prompt.purpose}`;
+  head.textContent = prompt.purpose === "introduce" ? "Introducing" : "Reviewing";
+  debugNow.append(head);
+  if (!why) {
+    addText(
+      debugNow,
+      "p",
+      "muted",
+      "This sentence was picked before reasons were recorded. The next one will have them.",
+    );
+    return;
+  }
+  const reasons = document.createElement("ol");
+  reasons.className = "debug-reasons";
+  for (const reason of why.reasons) addText(reasons, "li", "", reason);
+  debugNow.append(reasons);
+  addText(debugNow, "p", "muted", `Decided ${relative(why.decidedAt)}.`);
+  if (why.candidates.length > 1) {
+    const details = document.createElement("details");
+    addText(
+      details,
+      "summary",
+      "",
+      `Sentences weighed (${why.candidates.length} shown)`,
+    );
+    const list = document.createElement("ul");
+    for (const row of why.candidates) {
+      const li = document.createElement("li");
+      li.className = row.chosen ? "item debug-chosen" : "item";
+      addText(li, "b", "", row.hanzi);
+      const notes = [`tier ${row.tier}`];
+      if (row.newWords.length) notes.push(`new: ${row.newWords.join("、")}`);
+      notes.push(row.shownAt === null ? "unseen" : `shown ${relative(row.shownAt)}`);
+      if (row.chosen) notes.push("picked");
+      addText(li, "span", "gloss", ` ${notes.join(" · ")}`);
+      list.append(li);
+    }
+    details.append(list);
+    addText(
+      details,
+      "p",
+      "muted",
+      "Tier 1: every other word stable. Tier 2: every other word known. Tier 3: anything else.",
+    );
+    debugNow.append(details);
+  }
+}
+
+function renderDebugLast(trace) {
+  clear(debugLast);
+  if (!trace || trace.backend !== "practice" || !trace.events?.length) {
+    addText(debugLast, "p", "muted", "No practice answer yet.");
+    return;
+  }
+  const list = document.createElement("ul");
+  for (const event of trace.events) {
+    const li = document.createElement("li");
+    li.className = "event";
+    addText(li, "b", "", event.hanzi);
+    const pass = event.outcome !== "unknown" && event.outcome !== "misunderstood";
+    addText(li, "span", pass ? "debug-pass" : "debug-miss", pass ? " ✓ " : " ✗ ");
+    const before = event.before;
+    const stability = before
+      ? `S ${fixed(before.stability)} → ${fixed(event.stability)} d`
+      : `S ${fixed(event.stability)} d`;
+    addText(
+      li,
+      "span",
+      "gloss",
+      `${event.ratingName} · ${stability} · ${before ? `${before.state} → ` : ""}${event.state} · due ${relative(event.dueAt)}`,
+    );
+    list.append(li);
+  }
+  debugLast.append(list);
+  addText(
+    debugLast,
+    "p",
+    "muted",
+    "Every word in the sentence is graded. Showing the answer is a miss; anything else is a pass.",
+  );
+}
+
+function renderDebugQueue(debug) {
+  clear(debugQueue);
+  const rows = debug?.knowledge || [];
+  const now = debug?.now ?? Date.now();
+  const due = rows
+    .filter((row) => row.state !== "new" && row.due <= now)
+    .sort((a, b) => a.retrievability - b.retrievability);
+  const soon = rows.filter((row) => row.due > now).slice(0, 5);
+  if (due.length === 0) {
+    addText(
+      debugQueue,
+      "p",
+      "muted",
+      "Nothing is due, so the next sentence introduces a new word.",
+    );
+  } else {
+    addText(
+      debugQueue,
+      "p",
+      "muted",
+      "Due words, lowest recall chance first. The top one is reviewed next.",
+    );
+    const list = document.createElement("ol");
+    list.className = "debug-queue";
+    for (const row of due) {
+      const li = document.createElement("li");
+      addText(li, "b", "", row.hanzi);
+      addText(
+        li,
+        "span",
+        "gloss",
+        ` recall ${pct(row.retrievability)} · due ${relative(row.due, now)}`,
+      );
+      list.append(li);
+    }
+    debugQueue.append(list);
+  }
+  if (soon.length) {
+    addText(
+      debugQueue,
+      "p",
+      "muted",
+      `Coming up: ${soon.map((row) => `${row.hanzi} ${relative(row.due, now)}`).join(", ")}.`,
+    );
+  }
+}
+
+function renderDebugModel(debug, prompt) {
+  clear(debugModel);
+  const rows = debug?.knowledge || [];
+  if (rows.length === 0) {
+    addText(debugModel, "p", "muted", "No cards yet. Every word starts unknown.");
+    return;
+  }
+  const now = debug.now;
+  const tally = { stable: 0, known: 0, fragile: 0 };
+  for (const row of rows) tally[row.standing] += 1;
+  addText(
+    debugModel,
+    "p",
+    "muted",
+    `${rows.length} words with cards: ${tally.stable} stable, ${tally.known} known, ${tally.fragile} fragile. Stable means reviewed twice and recall still at least 90%.`,
+  );
+  const inSentence = new Set(
+    (prompt?.pieces || [])
+      .filter((piece) => piece.kind === "word")
+      .map((piece) => piece.hanzi),
+  );
+  const wrap = document.createElement("div");
+  wrap.className = "debug-table-wrap";
+  const table = document.createElement("table");
+  table.className = "debug-table";
+  const head = document.createElement("tr");
+  for (const [label, title] of [
+    ["Word", ""],
+    ["Standing", "stable, known or fragile"],
+    ["Recall", "Chance of recall right now"],
+    ["S", "Stability: days until recall falls to 90%"],
+    ["D", "Difficulty, 1 to 10"],
+    ["Due", ""],
+  ]) {
+    const th = addText(head, "th", "", label);
+    if (title) th.title = title;
+  }
+  const thead = document.createElement("thead");
+  thead.append(head);
+  table.append(thead);
+  const body = document.createElement("tbody");
+  for (const row of rows) {
+    const tr = document.createElement("tr");
+    if (row.due <= now) tr.classList.add("due");
+    if (row.hanzi === prompt?.focus) tr.classList.add("focus");
+    else if (inSentence.has(row.hanzi)) tr.classList.add("in-sentence");
+    const word = addText(tr, "td", "zh", row.hanzi);
+    word.title = `${row.pinyin} · ${row.gloss}\n${row.reps} reviews, ${row.lapses} misses`;
+    addText(tr, "td", `standing ${row.standing}`, `${row.standing} · ${row.state}`);
+    addText(tr, "td", "num", pct(row.retrievability));
+    addText(tr, "td", "num", fixed(row.stability));
+    addText(tr, "td", "num", fixed(row.difficulty));
+    addText(tr, "td", "num", relative(row.due, now));
+    body.append(tr);
+  }
+  table.append(body);
+  wrap.append(table);
+  debugModel.append(wrap);
+  addText(
+    debugModel,
+    "p",
+    "muted",
+    "Highlighted: due rows; bold is the word this sentence is for; marked rows are its other words.",
+  );
+}
+
+function renderDebug() {
+  const visible = debugOn() && !practicePanel.hidden;
+  debugSection.hidden = !visible;
+  scheduleSection.hidden = visible;
+  document.body.classList.toggle("debugging", visible);
+  if (!visible) return;
+  renderDebugNow(practice.debug, practice.prompt);
+  renderDebugLast(state.trace);
+  renderDebugQueue(practice.debug);
+  renderDebugModel(practice.debug, practice.prompt);
+}
+
 function renderList(node, items, renderItem, empty) {
   clear(node);
   if (!items || items.length === 0) {
@@ -502,6 +750,7 @@ function renderLedger() {
 function render() {
   renderMessages();
   renderLedger();
+  renderDebug();
   send.disabled = state.pending;
   text.disabled = state.pending;
   status.className = state.error ? "error" : "";
@@ -813,6 +1062,20 @@ function renderPractice() {
     return;
   }
   const words = wordPieces(prompt);
+  if (debugOn() && prompt.focus) {
+    const badge = document.createElement("p");
+    badge.className = `practice-purpose ${prompt.purpose}`;
+    const focusGloss = practice.debug?.knowledge
+      ?.find((row) => row.hanzi === prompt.focus)
+      ?.gloss?.split(/[;/]/u)[0]
+      .replace(/\s*\([^)]*\)/gu, "")
+      .trim();
+    badge.textContent =
+      prompt.purpose === "introduce"
+        ? `New word · ${prompt.focus}`
+        : `Review · ${prompt.focus}${focusGloss ? ` (${focusGloss})` : ""}`;
+    current.append(badge);
+  }
   const sentence = document.createElement("div");
   sentence.className = "practice-sentence";
   sentence.lang = "zh-Hans";
@@ -825,6 +1088,7 @@ function renderPractice() {
     const slotIndex = wordIndex;
     const slot = document.createElement("div");
     slot.className = "practice-slot";
+    if (debugOn() && piece.hanzi === prompt.focus) slot.classList.add("practice-focus");
     addText(slot, "span", "practice-hanzi", piece.hanzi);
     const field = document.createElement("div");
     field.className = "practice-field";
@@ -938,6 +1202,7 @@ async function loadPractice() {
     if (!response.ok) throw new Error(body.error || "Could not load pinyin practice.");
     if (body.preview) state.preview = body.preview;
     if (body.trace) state.trace = body.trace;
+    practice.debug = body.debug || null;
     acceptPrompt(body.prompt);
     render();
   } catch (error) {
@@ -979,6 +1244,7 @@ async function submitPractice() {
     state.preview = body.preview;
     state.trace = body.trace;
     state.error = "";
+    practice.debug = body.debug || null;
     acceptPrompt(body.prompt);
     render();
   } catch (error) {
@@ -1000,6 +1266,7 @@ function forgetPractice() {
   practice.error = "";
   practice.loadedFor = "";
   practice.history = [];
+  practice.debug = null;
   practiceArrival = null;
   if (practicePanel.hidden) renderPractice();
   else void loadPractice();
@@ -1013,6 +1280,7 @@ function selectTab(mode) {
   tabPractice.setAttribute("aria-selected", practiceOn ? "true" : "false");
   tabChat.tabIndex = practiceOn ? -1 : 0;
   tabPractice.tabIndex = practiceOn ? 0 : -1;
+  renderDebug();
   if (!practiceOn) return;
   if (practice.loadedFor !== learnerId()) void loadPractice();
   else renderPractice();
@@ -1217,6 +1485,21 @@ async function loadDictionary() {
     // The chat works without the popup dictionary.
   }
 }
+
+try {
+  showDebug.checked = localStorage.getItem("erudify-debug") !== "off";
+} catch {
+  showDebug.checked = true;
+}
+showDebug.addEventListener("change", () => {
+  try {
+    localStorage.setItem("erudify-debug", showDebug.checked ? "on" : "off");
+  } catch {
+    // The toggle still works for this page.
+  }
+  renderDebug();
+  if (!practicePanel.hidden) renderPractice();
+});
 
 learnerInput.value = localStorage.getItem("erudify-learner") || "local";
 loadSession();

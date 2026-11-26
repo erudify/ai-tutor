@@ -795,6 +795,185 @@ ul {
   clip: rect(0 0 0 0);
 }
 
+/* Scheduler internals, shown beside pinyin practice. */
+body.debugging main {
+  max-width: 1320px;
+  grid-template-columns: minmax(0, 1.2fr) minmax(22rem, 1fr);
+}
+
+.toggle {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 0.35rem;
+  cursor: pointer;
+}
+
+.toggle input {
+  width: auto;
+  margin: 0;
+}
+
+.debug h3 {
+  margin-top: 1.1rem;
+}
+
+.debug p {
+  margin: 0.4rem 0 0;
+  font-size: 0.86rem;
+  line-height: 1.45;
+}
+
+.debug-mode {
+  display: inline-block;
+  margin-top: 0.5rem !important;
+  padding: 0.1rem 0.55rem;
+  border-radius: 999px;
+  font-weight: 500;
+  font-size: 0.82rem !important;
+}
+
+.debug-mode.review,
+.practice-purpose.review {
+  color: var(--moss);
+  background: color-mix(in srgb, var(--moss) 14%, transparent);
+}
+
+.debug-mode.introduce,
+.practice-purpose.introduce {
+  color: var(--cinnabar);
+  background: var(--accent-wash);
+}
+
+.debug-reasons {
+  margin: 0.5rem 0 0;
+  padding-left: 1.2rem;
+  font-size: 0.86rem;
+  line-height: 1.5;
+}
+
+.debug-reasons li + li {
+  margin-top: 0.3rem;
+}
+
+.debug details {
+  margin-top: 0.5rem;
+  font-size: 0.86rem;
+}
+
+.debug summary {
+  cursor: pointer;
+  color: var(--soft);
+}
+
+.debug-chosen b {
+  color: var(--moss);
+}
+
+.debug-pass {
+  color: var(--moss);
+}
+
+.debug-miss {
+  color: var(--cinnabar);
+}
+
+.debug .event .gloss,
+.debug .item .gloss {
+  font-size: 0.84rem;
+}
+
+.debug-queue {
+  margin: 0.4rem 0 0;
+  padding-left: 1.4rem;
+  font-size: 0.86rem;
+  max-height: 10rem;
+  overflow: auto;
+}
+
+.debug-queue b {
+  font-family: "Noto Serif SC", serif;
+  font-weight: 500;
+}
+
+.debug-table-wrap {
+  margin-top: 0.5rem;
+  max-height: 22rem;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+}
+
+.debug-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.debug-table th {
+  position: sticky;
+  top: 0;
+  background: var(--card);
+  text-align: left;
+  font-weight: 500;
+  color: var(--soft);
+  padding: 0.35rem 0.45rem;
+  border-bottom: 1px solid var(--line);
+  cursor: help;
+}
+
+.debug-table td {
+  padding: 0.3rem 0.45rem;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+
+.debug-table td.zh {
+  font-family: "Noto Serif SC", serif;
+  font-size: 0.95rem;
+}
+
+.debug-table td.num {
+  text-align: right;
+}
+
+.debug-table tr.due td {
+  background: var(--accent-wash);
+}
+
+.debug-table tr.focus td {
+  font-weight: 600;
+  box-shadow: inset 0 -2px 0 var(--accent-rule);
+}
+
+.debug-table tr.in-sentence td.zh::after {
+  content: " •";
+  color: var(--moss);
+}
+
+.standing.stable {
+  color: var(--moss);
+}
+
+.standing.fragile {
+  color: var(--cinnabar);
+}
+
+.practice-purpose {
+  display: inline-block;
+  margin: 0 0 0.6rem;
+  padding: 0.1rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.82rem;
+  font-weight: 500;
+}
+
+.practice-focus .practice-hanzi {
+  text-decoration: underline dotted var(--accent-rule);
+  text-underline-offset: 0.3em;
+}
+
 @media (max-width: 800px) {
   .top,
   main {
@@ -815,6 +994,14 @@ ul {
   main:has(#practice-panel:not([hidden])) .ledger {
     max-height: 9rem;
     overflow: auto;
+  }
+
+  body.debugging main {
+    grid-template-columns: 1fr;
+  }
+
+  body.debugging main:has(#practice-panel:not([hidden])) .ledger {
+    max-height: 40vh;
   }
 
   .who {

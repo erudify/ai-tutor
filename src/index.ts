@@ -8,9 +8,11 @@ import { rulesLlm } from "./llm/rules";
 import type { Llm } from "./llm/types";
 import {
   gradePractice,
-  pickPractice,
+  knowledgeModel,
+  planPractice,
   promptFromActive,
   type PracticePrompt,
+  type PracticeWhy,
 } from "./srs/practice";
 import { applyEvidence, frontier, preview, renderBrief, suggest } from "./srs/schedule";
 import { prepareTurn, type Snapshot, type Trace } from "./turn";
@@ -95,6 +97,7 @@ function revealedIndexes(value: unknown): number[] {
 
 function practiceResponse(input: {
   prompt: PracticePrompt | null;
+  why: PracticeWhy | null;
   corpus: Corpus;
   cards: readonly Card[];
   trace: Trace | null;
@@ -104,6 +107,11 @@ function practiceResponse(input: {
     prompt: input.prompt,
     preview: preview(input.corpus, input.cards, input.now),
     trace: input.trace,
+    debug: {
+      now: input.now,
+      why: input.why,
+      knowledge: knowledgeModel(input.corpus, input.cards, input.now),
+    },
   };
 }
 
@@ -307,13 +315,19 @@ export default {
         const stub = learnerStub(env, id);
         const view = await stub.practiceView();
         let active = view.active;
+        let why = view.why;
         if (!active) {
-          const pick = pickPractice(corpus, view.cards, view.seen, now);
-          if (pick) active = (await stub.remember({ ...pick, now })).active;
+          const plan = planPractice(corpus, view.cards, view.seen, now);
+          if (plan) {
+            const kept = await stub.remember({ ...plan.active, why: plan.why, now });
+            active = kept.active;
+            why = kept.why;
+          }
         }
         return Response.json(
           practiceResponse({
             prompt: active ? promptFromActive(corpus, active) : null,
+            why,
             corpus,
             cards: view.cards,
             trace: view.trace,
@@ -365,8 +379,11 @@ export default {
               : "That sentence is no longer the current exercise.",
           );
         }
-        const pick = pickPractice(corpus, graded.cards, view.seen, now);
-        const active = pick ? (await stub.remember({ ...pick, now })).active : null;
+        const plan = planPractice(corpus, graded.cards, view.seen, now);
+        const kept = plan
+          ? await stub.remember({ ...plan.active, why: plan.why, now })
+          : null;
+        const active = kept?.active ?? null;
         console.log(
           JSON.stringify({
             message: "practice complete",
@@ -378,6 +395,7 @@ export default {
         return Response.json(
           practiceResponse({
             prompt: active ? promptFromActive(corpus, active) : null,
+            why: kept?.why ?? null,
             corpus,
             cards: graded.cards,
             trace,
