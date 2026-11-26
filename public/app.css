@@ -568,6 +568,23 @@ main {
   line-height: 1.45;
 }
 
+.practice-speak {
+  margin-left: 0.4rem;
+  padding: 0.1rem 0.45rem;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--soft);
+  font-family: system-ui, sans-serif;
+  font-size: 0.7rem;
+  line-height: 1.4;
+  vertical-align: middle;
+}
+
+.practice-speak:hover {
+  color: var(--ink);
+  border-color: var(--soft);
+}
+
 .practice-history-en {
   margin-top: 0.12rem;
   color: var(--soft);

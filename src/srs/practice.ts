@@ -116,7 +116,7 @@ function bestSentence(
   return best;
 }
 
-function findExample(corpus: Corpus, hanzi: string): IndexedExample | null {
+export function findExample(corpus: Corpus, hanzi: string): IndexedExample | null {
   for (const list of corpus.examplesByToken.values()) {
     for (const example of list) {
       if (example.hanzi === hanzi) return example;

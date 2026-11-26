@@ -59,6 +59,31 @@ let practiceGhost = null;
 
 let practiceEpoch = 0;
 
+/** Spoken audio for the current sentence, fetched while the student types. */
+const speech = { hanzi: "", audio: null };
+
+function speechUrl(hanzi) {
+  return `/api/speech?text=${encodeURIComponent(hanzi)}`;
+}
+
+function preloadSpeech(hanzi) {
+  if (!hanzi || speech.hanzi === hanzi) return;
+  const audio = new Audio();
+  audio.preload = "auto";
+  audio.src = speechUrl(hanzi);
+  speech.hanzi = hanzi;
+  speech.audio = audio;
+}
+
+function playSpeech(hanzi) {
+  if (!hanzi) return;
+  const audio =
+    speech.hanzi === hanzi && speech.audio ? speech.audio : new Audio(speechUrl(hanzi));
+  audio.currentTime = 0;
+  // Playback is a nicety: a blocked autoplay or a missing key must not break practice.
+  void audio.play().catch(() => {});
+}
+
 const state = {
   messages: [],
   systemPrompt: "",
@@ -975,7 +1000,8 @@ function settlePractice(from) {
     const english = item?.querySelector(".practice-history-en");
     const sentence = practiceStage.querySelector(".practice-sentence");
     if (zh && zh.style.opacity === "0") {
-      const to = inkBox(zh);
+      const words = zh.querySelector(".practice-history-text") ?? zh;
+      const to = inkBox(words);
       const dx = from.left + from.width / 2 - (to.left + to.width / 2);
       const dy = from.top + from.height / 2 - (to.top + to.height / 2);
       const toSize = parseFloat(getComputedStyle(zh).fontSize) || from.fontSize || 1;
@@ -983,7 +1009,7 @@ function settlePractice(from) {
       const ghost = document.createElement("p");
       ghost.className = "practice-history-zh practice-flight";
       ghost.lang = "zh-Hans";
-      ghost.textContent = zh.textContent;
+      ghost.textContent = words.textContent;
       ghost.style.left = `${to.left}px`;
       ghost.style.top = `${to.top}px`;
       ghost.style.width = `${Math.max(to.width, 1)}px`;
@@ -1017,8 +1043,17 @@ function renderHistory(stack) {
   list.setAttribute("aria-label", "Completed exercises");
   for (const item of practice.history) {
     const row = document.createElement("li");
-    const chinese = addText(row, "p", "practice-history-zh", item.hanzi);
+    const chinese = addText(row, "p", "practice-history-zh", "");
     chinese.lang = "zh-Hans";
+    addText(chinese, "span", "practice-history-text", item.hanzi);
+    const replay = document.createElement("button");
+    replay.type = "button";
+    replay.className = "practice-speak";
+    replay.textContent = "▶";
+    replay.title = "Play pronunciation";
+    replay.setAttribute("aria-label", `Play pronunciation of ${item.hanzi}`);
+    replay.addEventListener("click", () => playSpeech(item.hanzi));
+    chinese.append(replay);
     if (item.english) {
       const english = addText(row, "p", "practice-history-en", item.english);
       english.lang = "en";
@@ -1180,6 +1215,7 @@ function acceptPrompt(prompt) {
   practice.pending = false;
   practice.error = "";
   practice.loadedFor = learnerId();
+  preloadSpeech(prompt?.hanzi);
   renderPractice();
 }
 
@@ -1240,6 +1276,7 @@ async function submitPractice() {
     if (!response.ok) throw new Error(body.error || "Could not save this sentence.");
     const finished = practiceStage.querySelector(".practice-sentence");
     rememberExercise(prompt);
+    playSpeech(prompt.hanzi);
     practiceArrival = finished ? measureGlyphs(finished) : null;
     state.preview = body.preview;
     state.trace = body.trace;

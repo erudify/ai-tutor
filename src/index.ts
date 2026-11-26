@@ -6,7 +6,9 @@ import { createClaude } from "./llm/claude";
 import { TUTOR_INSTRUCTIONS } from "./llm/prompts";
 import { rulesLlm } from "./llm/rules";
 import type { Llm } from "./llm/types";
+import { speak, SpeechError } from "./speech";
 import {
+  findExample,
   gradePractice,
   knowledgeModel,
   planPractice,
@@ -35,6 +37,7 @@ class HttpError extends Error {
 declare global {
   interface Env {
     ANTHROPIC_API_KEY?: string;
+    OPENROUTER_API_KEY?: string;
   }
 }
 
@@ -293,7 +296,7 @@ function streamTurn(input: {
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
     try {
       if (request.method === "GET" && url.pathname === "/api/health") {
@@ -403,6 +406,31 @@ export default {
           }),
         );
       }
+      if (request.method === "GET" && url.pathname === "/api/speech") {
+        const text = url.searchParams.get("text") ?? "";
+        if (text.length === 0 || text.length > 200) {
+          throw new HttpError(400, "That sentence is missing.");
+        }
+        if (!env.OPENROUTER_API_KEY) {
+          throw new HttpError(
+            503,
+            "OPENROUTER_API_KEY is not set. Add it with wrangler secret put, or a .dev.vars file for local dev.",
+          );
+        }
+        const corpus = await getCorpus(env.CORPUS);
+        if (!findExample(corpus, text)) {
+          throw new HttpError(404, "Only practice sentences can be spoken.");
+        }
+        return await speak(
+          {
+            apiKey: env.OPENROUTER_API_KEY,
+            model: env.TTS_MODEL,
+            voice: env.TTS_VOICE,
+          },
+          text,
+          ctx,
+        );
+      }
       if (request.method === "POST" && url.pathname === "/api/reset") {
         const body = await readJson(request);
         const id = learnerId(body, url);
@@ -453,7 +481,7 @@ export default {
       if (error instanceof CorpusEmptyError) {
         return Response.json({ error: error.message }, { status: 503 });
       }
-      if (error instanceof HttpError) {
+      if (error instanceof HttpError || error instanceof SpeechError) {
         return Response.json({ error: error.message }, { status: error.status });
       }
       const message = error instanceof Error ? error.message : "The turn failed.";
