@@ -35,6 +35,16 @@ export type AppliedReview = {
   dueAt: number;
   state: string;
   stability: number;
+  difficulty: number;
+  /** The card as it was before this review. Raw input for refitting weights. */
+  before: {
+    state: string;
+    stability: number;
+    difficulty: number;
+    lastReview: number | null;
+    reps: number;
+    lapses: number;
+  };
 };
 
 const OUTCOME_RANK: Record<Outcome, number> = {
@@ -55,18 +65,13 @@ export function mergeEvidence(events: readonly Evidence[]): Evidence[] {
   return [...byWord.values()];
 }
 
-export function outcomeToRating(
-  outcome: Outcome,
-  card: Card,
-  now: number,
-): RatingValue {
+/**
+ * Pass or fail. Practice never asks how hard a word felt, so it never claims
+ * Easy. "recognized" only comes from the chat judge: seen, not produced.
+ */
+export function outcomeToRating(outcome: Outcome): RatingValue {
   if (outcome === "misunderstood" || outcome === "unknown") return Rating.Again;
   if (outcome === "recognized") return Rating.Hard;
-  if (card.state === State.Review && card.reps >= 2 && card.stability > 0) {
-    const elapsed =
-      card.lastReview === null ? 0 : Math.max(0, (now - card.lastReview) / 86_400_000);
-    if (fsrs().forgettingCurve(elapsed, card.stability) >= 0.9) return Rating.Easy;
-  }
   return Rating.Good;
 }
 
@@ -81,7 +86,7 @@ export function applyEvidence(
   for (const event of mergeEvidence(events)) {
     if (!allowed.has(event.hanzi)) continue;
     const current = next.get(event.hanzi) ?? freshCard(event.hanzi, now);
-    const rating = outcomeToRating(event.outcome, current, now);
+    const rating = outcomeToRating(event.outcome);
     const updated = fsrs().review(current, rating, now);
     if (current.lapses === 0 && rating !== Rating.Again)
       scheduleNeverMissed(updated, now);
@@ -95,6 +100,15 @@ export function applyEvidence(
       dueAt: updated.due,
       state: STATE_NAME[updated.state],
       stability: updated.stability,
+      difficulty: updated.difficulty,
+      before: {
+        state: STATE_NAME[current.state],
+        stability: current.stability,
+        difficulty: current.difficulty,
+        lastReview: current.lastReview,
+        reps: current.reps,
+        lapses: current.lapses,
+      },
     });
   }
   return { cards: [...next.values()], applied };

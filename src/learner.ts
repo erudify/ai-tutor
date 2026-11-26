@@ -1,6 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { State, type Card, type StateValue } from "./srs/fsrs";
 import type { PracticePurpose } from "./srs/practice";
+import type { AppliedReview } from "./srs/schedule";
 import type { Trace } from "./turn";
 
 type DialogueMessage = { role: "user" | "assistant"; content: string };
@@ -71,6 +72,21 @@ export type FinishPracticeInput = {
 };
 
 const LOCK_MS = 90_000;
+
+/** Raw review-log fields added after the first schema. */
+const REVIEW_LOG_COLUMNS: [string, string][] = [
+  ["source", "TEXT"],
+  ["sentence", "TEXT"],
+  ["is_focus", "INTEGER"],
+  ["difficulty", "REAL"],
+  ["state_after", "TEXT"],
+  ["state_before", "TEXT"],
+  ["stability_before", "REAL"],
+  ["difficulty_before", "REAL"],
+  ["last_review_before", "INTEGER"],
+  ["reps_before", "INTEGER"],
+  ["lapses_before", "INTEGER"],
+];
 
 function isState(value: number): value is StateValue {
   return (
@@ -157,19 +173,7 @@ export class Learner extends DurableObject<Env> {
           card.learningStep,
         );
       }
-      for (const event of input.trace.events) {
-        this.sql.exec(
-          "INSERT INTO reviews (id, hanzi, rating, outcome, quote, at, stability, due) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-          crypto.randomUUID(),
-          event.hanzi,
-          event.rating,
-          event.outcome,
-          event.quote,
-          input.now,
-          event.stability,
-          event.dueAt,
-        );
-      }
+      this.logReviews(input.trace.events, input.now, "chat", null, null);
       this.sql.exec(
         "INSERT INTO traces (at, payload) VALUES (?, ?)",
         input.now,
@@ -240,19 +244,13 @@ export class Learner extends DurableObject<Env> {
         return;
       }
       for (const card of input.cards) this.writeCard(card);
-      for (const event of input.trace.events) {
-        this.sql.exec(
-          "INSERT INTO reviews (id, hanzi, rating, outcome, quote, at, stability, due) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-          crypto.randomUUID(),
-          event.hanzi,
-          event.rating,
-          event.outcome,
-          event.quote,
-          input.now,
-          event.stability,
-          event.dueAt,
-        );
-      }
+      this.logReviews(
+        input.trace.events,
+        input.now,
+        "practice",
+        input.hanzi,
+        this.meta("practice_focus") || null,
+      );
       this.sql.exec(
         "INSERT INTO traces (at, payload) VALUES (?, ?)",
         input.now,
@@ -311,6 +309,7 @@ export class Learner extends DurableObject<Env> {
       stability REAL NOT NULL,
       due INTEGER NOT NULL
     )`);
+    this.addColumns("reviews", REVIEW_LOG_COLUMNS);
     this.sql.exec(`CREATE TABLE IF NOT EXISTS messages (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       role TEXT NOT NULL,
@@ -330,6 +329,62 @@ export class Learner extends DurableObject<Env> {
       hanzi TEXT PRIMARY KEY,
       shown_at INTEGER NOT NULL
     )`);
+  }
+
+  /** SQLite has no ADD COLUMN IF NOT EXISTS. Older rows keep NULL. */
+  private addColumns(table: string, columns: readonly [string, string][]): void {
+    const present = new Set(
+      this.sql
+        .exec<{ name: string }>(`SELECT name FROM pragma_table_info('${table}')`)
+        .toArray()
+        .map((row) => row.name),
+    );
+    for (const [name, type] of columns) {
+      if (!present.has(name))
+        this.sql.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${type}`);
+    }
+  }
+
+  /**
+   * One row per graded word, with the card before and after, so the
+   * scheduler can be refitted from this table alone.
+   */
+  private logReviews(
+    events: readonly AppliedReview[],
+    now: number,
+    source: "chat" | "practice",
+    sentence: string | null,
+    focus: string | null,
+  ): void {
+    for (const event of events) {
+      this.sql.exec(
+        `INSERT INTO reviews (
+          id, hanzi, rating, outcome, quote, at, stability, due,
+          source, sentence, is_focus, difficulty, state_after,
+          state_before, stability_before, difficulty_before,
+          last_review_before, reps_before, lapses_before
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        crypto.randomUUID(),
+        event.hanzi,
+        event.rating,
+        event.outcome,
+        event.quote,
+        now,
+        event.stability,
+        event.dueAt,
+        source,
+        sentence,
+        focus === null ? null : event.hanzi === focus ? 1 : 0,
+        event.difficulty,
+        event.state,
+        event.before.state,
+        event.before.stability,
+        event.before.difficulty,
+        event.before.lastReview,
+        event.before.reps,
+        event.before.lapses,
+      );
+    }
   }
 
   private dialogue(limit: number): DialogueMessage[] {

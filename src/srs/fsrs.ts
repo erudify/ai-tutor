@@ -1,8 +1,8 @@
 /**
  * FSRS-5 scheduler.
  * Memory formulas follow open-spaced-repetition/ts-fsrs v5 (FSRS-5, 19 weights
- * padded with the same-day power 0 and decay 0.5). Learning steps follow the
- * short Anki steps: 1 minute, then 10 minutes, then a review interval.
+ * padded with the same-day power 0 and decay 0.5). A new word that is missed
+ * walks dense learning steps (LEARNING_MINUTES) before its first day interval.
  * Fuzzing is off so a rating has one interval.
  */
 
@@ -49,7 +49,8 @@ export type Card = {
   learningStep: number;
 };
 
-const LEARNING_MINUTES = [1, 10];
+/** Several same-day repeats before a missed new word earns a day interval. */
+export const LEARNING_MINUTES = [1, 3, 10, 30, 60];
 const RELEARNING_MINUTES = [10];
 
 function clamp(value: number, lo: number, hi: number): number {

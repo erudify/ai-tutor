@@ -11,7 +11,15 @@ import {
   type Frontier,
   type Suggestion,
 } from "../src/srs/schedule";
-import { DAY_MS, freshCard, fsrs, Rating, State, type Card } from "../src/srs/fsrs";
+import {
+  DAY_MS,
+  freshCard,
+  fsrs,
+  LEARNING_MINUTES,
+  Rating,
+  State,
+  type Card,
+} from "../src/srs/fsrs";
 
 const now = 1_700_000_000_000;
 const allowed = new Set(["我", "饺子"]);
@@ -110,7 +118,7 @@ describe("never-missed successes", () => {
       later,
     );
     expect(recovered.cards[0].state).toBe(State.Learning);
-    expect(recovered.cards[0].due).toBe(later + 10 * 60_000);
+    expect(recovered.cards[0].due).toBe(later + LEARNING_MINUTES[1] * 60_000);
   });
 
   it("does not pull a longer never-missed interval back to two weeks", () => {
@@ -191,10 +199,34 @@ describe("learner brief", () => {
   });
 });
 
+describe("pass/fail grading", () => {
+  it("rates an early success on a stable word Good, never Easy", () => {
+    const card = freshCard("我", now - DAY_MS);
+    card.state = State.Review;
+    card.stability = 40;
+    card.difficulty = 5;
+    card.reps = 5;
+    card.lastReview = now - DAY_MS;
+    card.due = now + 39 * DAY_MS;
+    const { applied } = applyEvidence(
+      [card],
+      [{ hanzi: "我", outcome: "produced", quote: "我" }],
+      new Set(["我"]),
+      now,
+    );
+    expect(applied[0].rating).toBe(Rating.Good);
+    expect(applied[0].before.stability).toBe(40);
+    expect(applied[0].before.lastReview).toBe(now - DAY_MS);
+  });
+});
+
 describe("review lapses", () => {
   it("counts one lapse when a graduated card is missed", () => {
-    const first = fsrs().review(freshCard("我", now), Rating.Good, now);
-    const graduated = fsrs().review(first, Rating.Good, now + 10 * 60_000);
+    let graduated = fsrs().review(freshCard("我", now), Rating.Good, now);
+    while (graduated.state === State.Learning) {
+      graduated = fsrs().review(graduated, Rating.Good, graduated.due);
+    }
+    expect(graduated.state).toBe(State.Review);
     expect(graduated.lapses).toBe(0);
     const missed = fsrs().review(graduated, Rating.Again, now + DAY_MS);
     expect(missed.lapses).toBe(1);

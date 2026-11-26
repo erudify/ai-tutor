@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { freshCard, fsrs, Rating, State } from "../src/srs/fsrs";
+import { freshCard, fsrs, LEARNING_MINUTES, Rating, State } from "../src/srs/fsrs";
 
 const MINUTE = 60_000;
 
@@ -9,12 +9,12 @@ describe("FSRS-5", () => {
     expect(fsrs().forgettingCurve(stability, stability)).toBeCloseTo(0.9, 5);
   });
 
-  it("schedules a new Good answer onto the ten-minute step", () => {
+  it("schedules a new Good answer onto the second learning step", () => {
     const now = 1_700_000_000_000;
     const next = fsrs().review(freshCard("我", now), Rating.Good, now);
     expect(next.stability).toBeCloseTo(3.173, 5);
     expect(next.state).toBe(State.Learning);
-    expect(next.due).toBe(now + 10 * MINUTE);
+    expect(next.due).toBe(now + LEARNING_MINUTES[1] * MINUTE);
   });
 
   it("schedules a new Again answer one minute out and counts the miss", () => {
@@ -25,11 +25,17 @@ describe("FSRS-5", () => {
     expect(next.lapses).toBe(1);
   });
 
-  it("graduates the second Good answer to a review interval of at least a day", () => {
-    const now = 1_700_000_000_000;
-    const first = fsrs().review(freshCard("我", now), Rating.Good, now);
-    const second = fsrs().review(first, Rating.Good, now + 10 * MINUTE);
-    expect(second.state).toBe(State.Review);
-    expect(second.scheduledDays).toBeGreaterThanOrEqual(1);
+  it("repeats a missed new word at every learning step before a day interval", () => {
+    let now = 1_700_000_000_000;
+    let card = fsrs().review(freshCard("饺子", now), Rating.Again, now);
+    const gaps: number[] = [(card.due - now) / MINUTE];
+    while (card.state === State.Learning) {
+      now = card.due;
+      card = fsrs().review(card, Rating.Good, now);
+      if (card.state === State.Learning) gaps.push((card.due - now) / MINUTE);
+    }
+    expect(gaps).toEqual(LEARNING_MINUTES);
+    expect(card.state).toBe(State.Review);
+    expect(card.scheduledDays).toBeGreaterThanOrEqual(1);
   });
 });
